@@ -1,0 +1,14 @@
+{
+  "model": "moonshotai/kimi-k3.1-pro",
+  "maxAskRounds": 3,
+  "maxSteps": 60,
+  "historyCharLimit": 2000000,
+  "claude": {
+    "model": null,
+    "effort": null,
+    "maxBudgetUsdPerCall": null,
+    "implementAllow": ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
+    "denyRead": [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"]
+  },
+  "forbidden": []
+}
