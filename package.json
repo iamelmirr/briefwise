@@ -1,12 +1,16 @@
 {
   "name": "kimi-lead",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Kimi (OpenRouter) as tech lead, Claude Code as the coding worker",
   "type": "module",
   "bin": { "kimi-lead": "bin/kimi-lead.mjs" },
   "engines": { "node": ">=22.6" },
   "scripts": {
     "start": "node bin/kimi-lead.mjs",
-    "typecheck": "tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext --allowImportingTsExtensions --types node src/lead.ts"
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
   }
 }

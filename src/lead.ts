@@ -1,399 +1,443 @@
-#!/usr/bin/env node
-// kimi-lead — Kimi (via OpenRouter) as tech lead, Claude Code as the coding worker.
-// Zero dependencies. Run with: node --experimental-strip-types src/lead.ts  (Node >= 22.6)
+// kimi-lead core — Kimi (via OpenRouter) as tech lead, Claude Code as the coding worker.
+// UI-agnostic: everything that happens is emitted as a LeadEvent (rendered by the CLI now, the VS Code panel later).
 
-import { spawn, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as readline from "node:readline/promises";
-import { stdin, stdout } from "node:process";
-import { fileURLToPath } from "node:url";
+import { clip, init, isDenied, readJson, readText, writeJson, type Config, type Paths } from "./config.ts";
+import { changesSince, dirtyFiles, git, guardIssues, snapshot } from "./git.ts";
+import { buildArgs, resolveClaudeBin, startClaude, withMode, type ClaudeEvent, type ClaudeResult, type ClaudeRun, type Mode } from "./claude.ts";
+import { kimiCall, type Msg } from "./kimi.ts";
 
-// ───────────────────────── config ─────────────────────────
+export type LeadEvent =
+  | { type: "kimi-start" }
+  | { type: "kimi-reasoning"; delta: string }
+  | { type: "kimi-text"; delta: string }
+  | { type: "kimi-end"; promptTokens: number; cachedTokens: number }
+  | { type: "kimi-tool"; name: string; label: string }
+  | { type: "claude-start"; session: string; mode: Mode; prompt: string }
+  | { type: "claude-event"; session: string; event: ClaudeEvent }
+  | { type: "claude-end"; session: string; result: ClaudeResult }
+  | { type: "guard"; issues: string[] }
+  | { type: "blocked"; reason: string }
+  | { type: "notice"; text: string }
+  | { type: "task-end"; report: string; streamed: boolean; kimiUsd: number; claudeUsd: number };
 
-type Config = {
-  model: string;
-  maxAskRounds: number;        // ask_claude calls allowed per task
-  maxSteps: number;            // Kimi tool-loop steps per task
-  historyCharLimit: number;    // trim Kimi history above this size
-  claude: {
-    model?: string;
-    effort?: string;
-    maxBudgetUsdPerCall?: number;
-    implementAllow: string[];  // extra tools Claude may use when implementing (tests, lint…)
-    denyRead: string[];        // paths Claude may never read (gitignore-style, relative to repo)
-  };
-  forbidden: string[];         // regexes that must never appear in a prompt sent to Claude
+export type LeadHooks = {
+  emit(e: LeadEvent): void;
+  /** Ask the user a question mid-task. Resolve null if nobody can answer. */
+  askUser(question: string): Promise<string | null>;
 };
-
-const DEFAULT_CONFIG: Config = {
-  model: "moonshotai/kimi-k3.1-pro",
-  maxAskRounds: 3,
-  maxSteps: 60,
-  historyCharLimit: 2_000_000,
-  claude: {
-    implementAllow: [],
-    denyRead: [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"],
-  },
-  forbidden: [],
-};
-
-const REPO = process.cwd();
-const KDIR = path.join(REPO, ".kimi");
-const P = {
-  config: path.join(KDIR, "config.json"),
-  rules: path.join(KDIR, "RULES.md"),
-  project: path.join(KDIR, "PROJECT.md"),
-  tasks: path.join(KDIR, "TASKS.md"),
-  decisions: path.join(KDIR, "DECISIONS.md"),
-  sessions: path.join(KDIR, "sessions.json"),
-  history: path.join(KDIR, "history.json"),
-  log: path.join(KDIR, "log.md"),
-};
-const NOTES: Record<string, string> = { PROJECT: P.project, TASKS: P.tasks, DECISIONS: P.decisions };
-
-function readText(p: string, fallback = ""): string {
-  try { return fs.readFileSync(p, "utf8"); } catch { return fallback; }
-}
-function readJson<T>(p: string, fallback: T): T {
-  try { return JSON.parse(fs.readFileSync(p, "utf8")) as T; } catch { return fallback; }
-}
-function writeJson(p: string, v: unknown) { fs.writeFileSync(p, JSON.stringify(v, null, 2)); }
-function log(section: string, body: string) {
-  fs.appendFileSync(P.log, `\n## ${new Date().toISOString()} — ${section}\n\n${body.trim()}\n`);
-}
-function clip(s: string, n = 100_000): string {
-  return s.length > n ? s.slice(0, n) + `\n…[truncated ${s.length - n} chars]` : s;
-}
-
-function init(): Config {
-  fs.mkdirSync(KDIR, { recursive: true });
-  const tpl = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
-  for (const [file, dest] of [["RULES.md", P.rules], ["PROJECT.md", P.project], ["TASKS.md", P.tasks], ["DECISIONS.md", P.decisions], ["config.json", P.config]] as const) {
-    if (!fs.existsSync(dest)) fs.writeFileSync(dest, readText(path.join(tpl, file), file.endsWith(".json") ? JSON.stringify(DEFAULT_CONFIG, null, 2) : ""));
-  }
-  // keep .kimi out of git without touching the team's .gitignore
-  const exclude = path.join(REPO, ".git", "info", "exclude");
-  if (fs.existsSync(path.dirname(exclude)) && !readText(exclude).includes(".kimi/")) fs.appendFileSync(exclude, "\n.kimi/\n");
-  const user = readJson<Partial<Config>>(P.config, {});
-  return { ...DEFAULT_CONFIG, ...user, claude: { ...DEFAULT_CONFIG.claude, ...(user.claude ?? {}) } };
-}
-
-// ───────────────────────── git helpers ─────────────────────────
-
-function git(args: string[]): string {
-  try { return execFileSync("git", args, { cwd: REPO, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }); }
-  catch (e: any) { return `git error: ${e.stderr || e.message}`; }
-}
-function statusMap(): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const line of git(["status", "--porcelain", "-uall"]).split("\n")) {
-    if (line.length > 3 && !line.startsWith("git error")) m.set(line.slice(3).trim(), line.slice(0, 2));
-  }
-  return m;
-}
-
-// Changes that need the user's approval — checked in code, not just by prompt.
-const GUARDS: [RegExp, string][] = [
-  [/(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.mod|go\.sum|requirements[^/]*\.txt|pyproject\.toml|poetry\.lock|Cargo\.toml|composer\.json|pom\.xml|build\.gradle(\.kts)?|[^/]+\.csproj|Gemfile)$/, "dependencies"],
-  [/(^|\/)(migrations?|db\/migrate)\/|schema\.prisma$|\.sql$/, "database schema"],
-  [/(^|\/)(Dockerfile|docker-compose[^/]*|\.github\/workflows\/|k8s\/|helm\/|terraform\/)|\.tf$|(^|\/)\.env/, "deployment / production config"],
-];
-
-function guardCheck(before: Map<string, string>): string[] {
-  const issues: string[] = [];
-  for (const [file, code] of statusMap()) {
-    if (before.get(file) === code) continue; // already dirty before this call
-    if (code.includes("D")) issues.push(`deleted: ${file}`);
-    for (const [re, what] of GUARDS) if (re.test(file)) issues.push(`${what}: ${file}`);
-  }
-  return [...new Set(issues)];
-}
-
-// ───────────────────────── Claude Code worker ─────────────────────────
 
 type Session = { id?: string; purpose: string; created: string };
-let sessions: Record<string, Session> = {};
-
-const WORKER_PROMPT = `You are a senior engineer working under a technical lead. All tasks come from the lead; you never talk to anyone else.
-Hard rules unless the task text explicitly says the change is APPROVED BY THE USER:
-- do not add, remove or upgrade dependencies
-- do not change database schema or migrations
-- do not delete files
-- do not touch deployment, CI or production configuration
-If a good solution needs one of these, stop and explain why instead of doing it.
-Always end with a short report: what you did / found, files changed, commands or tests run with results, open questions or risks.`;
-
-const ASK_MODE = `MODE: CONSULT. Read-only. Investigate the code and answer or propose options with trade-offs. Do not modify anything.`;
-const IMPL_MODE = `MODE: IMPLEMENT. Make the changes, keep them focused, run the relevant tests/linters you are allowed to run.`;
-
-const READ_ONLY = ["Read", "Grep", "Glob", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"];
-
-let claudeCostUsd = 0;
-
-function runClaude(cfg: Config, sessionName: string, prompt: string, mode: "ask" | "implement"): Promise<string> {
-  const s = sessions[sessionName] ?? (sessions[sessionName] = { purpose: "(auto-created)", created: new Date().toISOString() });
-  const deny = [
-    ...cfg.claude.denyRead.flatMap((g) => [`Read(./${g})`, `Edit(./${g})`]),
-    "Read(./.kimi/**)", "Edit(./.kimi/**)", "Write(./.kimi/**)",
-    "Bash(git push:*)", "Bash(git reset:*)", "Bash(git checkout:*)", "Bash(rm:*)",
-    ...(mode === "ask" ? ["Edit", "Write", "NotebookEdit"] : []),
-  ];
-  const allow = mode === "ask" ? READ_ONLY : [...READ_ONLY, "Edit", "Write", ...cfg.claude.implementAllow];
-  const args = [
-    "-p", "--output-format", "json",
-    "--permission-mode", mode === "ask" ? "dontAsk" : "acceptEdits",
-    "--permission-prompts", "none",
-    "--append-system-prompt", `${WORKER_PROMPT}\n\n${mode === "ask" ? ASK_MODE : IMPL_MODE}`,
-    "--allowedTools", ...allow,
-    "--disallowedTools", ...deny,
-  ];
-  if (s.id) args.push("--resume", s.id);
-  if (cfg.claude.model) args.push("--model", cfg.claude.model);
-  if (cfg.claude.effort) args.push("--effort", cfg.claude.effort);
-  if (cfg.claude.maxBudgetUsdPerCall) args.push("--max-budget-usd", String(cfg.claude.maxBudgetUsdPerCall));
-
-  return new Promise((resolve) => {
-    const child = spawn("claude", args, { cwd: REPO, stdio: ["pipe", "pipe", "pipe"] });
-    let out = "", err = "";
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-    child.on("error", (e) => resolve(`ERROR: could not start claude: ${e.message}`));
-    child.on("close", (code) => {
-      try {
-        const r = JSON.parse(out.trim().split("\n").pop() || "{}");
-        if (r.session_id) { s.id = r.session_id; writeJson(P.sessions, sessions); }
-        claudeCostUsd += Number(r.total_cost_usd || 0);
-        resolve(`${r.is_error ? "CLAUDE ERROR: " : ""}${r.result ?? "(no result)"}`);
-      } catch {
-        if (s.id && /No conversation found/i.test(out + err)) {
-          delete s.id; writeJson(P.sessions, sessions); // session vanished → start fresh
-          return resolve(runClaude(cfg, sessionName, `(Previous session context was lost; start fresh.)\n\n${prompt}`, mode));
-        }
-        resolve(`ERROR: claude exited with code ${code}\n${clip(err || out, 4000)}`);
-      }
-    });
-    child.stdin.end(prompt);
-  });
-}
-
-// ───────────────────────── Kimi's tools ─────────────────────────
+type Turn = { user: string; report: string; at: string };
+type Task = {
+  goal: string;
+  msgs: Msg[];
+  priorCount: number;            // leading msgs that are earlier (question, report) pairs
+  readLabels: Map<string, string>; // tool_call_id → short label, for pruning old reads
+  asks: number;
+  done?: string;
+  streamed: boolean;
+};
 
 const str = { type: "string" };
 function tool(name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []) {
   return { type: "function", function: { name, description, parameters: { type: "object", properties, required } } };
 }
+const NOTE_FILES = ["PROJECT", "TASKS", "DECISIONS", "PRIVATE"] as const;
+type NoteFile = (typeof NOTE_FILES)[number];
 
 const TOOLS = [
-  tool("list_files", "List tracked files in the repo, optionally filtered by a substring.", { filter: str }),
-  tool("read_file", "Read a repo file (optionally a 1-based line range).", { path: str, start: { type: "integer" }, end: { type: "integer" } }, ["path"]),
-  tool("grep", "Search the repo (git grep, regex).", { pattern: str, path: str }, ["pattern"]),
-  tool("git", "Read-only git: status, diff, log, show, branch. Pass args as a list.", { args: { type: "array", items: str } }, ["args"]),
-  tool("update_notes", "Overwrite one of your notes files (PROJECT, TASKS, DECISIONS) with full new content.", { file: { type: "string", enum: ["PROJECT", "TASKS", "DECISIONS"] }, content: str }, ["file", "content"]),
+  tool("list_files", "List tracked files, optionally filtered by a substring.", { filter: str }),
+  tool("read_file", "Read part of a repo file. Small ranges (max ~200 lines per call).", { path: str, start: { type: "integer" }, end: { type: "integer" } }, ["path"]),
+  tool("grep", "Search the repo (git grep, extended regex). Returns a limited number of matching lines.", { pattern: str, path: str }, ["pattern"]),
+  tool("git", "Read-only git: status, diff, log, show, branch. Pass args as a list, e.g. [\"diff\", \"--stat\"].", { args: { type: "array", items: str } }, ["args"]),
+  tool("update_notes", "Overwrite one of your notes files with full new content. PRIVATE is for things only you may know (never shared with Claude).", { file: { type: "string", enum: [...NOTE_FILES] }, content: str }, ["file", "content"]),
   tool("new_session", "Register a named Claude Code session for a workstream (e.g. 'auth', 'billing-api').", { name: str, purpose: str }, ["name", "purpose"]),
   tool("list_sessions", "List Claude Code sessions."),
-  tool("ask_claude", "Consult Claude Code in a session (read-only: it can read code, cannot change it). Counts toward the per-task question limit.", { session: str, prompt: str }, ["session", "prompt"]),
-  tool("implement", "Have Claude Code implement changes in a session. It edits files and runs allowed tests.", { session: str, prompt: str }, ["session", "prompt"]),
+  tool("ask_claude", "Consult Claude Code in a session, read-only (it investigates code, cannot change it). Counts toward the per-task consultation limit.", { session: str, prompt: str }, ["session", "prompt"]),
+  tool("implement", "Have Claude Code implement changes in a session. It edits files and runs allowed checks.", { session: str, prompt: str }, ["session", "prompt"]),
   tool("escalate_to_user", "Stop and ask the user. Use for approvals (dependencies, schema, deletions, production) or real ambiguity about the goal.", { question: str }, ["question"]),
-  tool("finish", "Task done (or cannot continue). Give the user the final report.", { report: str }, ["report"]),
+  tool("finish", "Task done (or cannot continue). Give the user the final report in their language.", { report: str }, ["report"]),
 ];
+const READ_TOOLS = new Set(["list_files", "read_file", "grep", "git"]);
 
-type Ctx = { cfg: Config; asks: number; rl: readline.Interface; done?: string };
+const CHECKPOINT = `CONTEXT CHECKPOINT (from the system, not the user): your context is full. Write a compact summary for yourself so you can continue this task with a fresh context: the goal, what you learned (files, functions), what Claude did in which session, decisions made, what remains. Max 300 words. Do not call tools.`;
 
-function forbiddenHit(cfg: Config, text: string): number {
-  return cfg.forbidden.findIndex((r) => new RegExp(r, "i").test(text));
-}
+const estTokens = (system: string, msgs: Msg[]) => Math.ceil((system.length + JSON.stringify(msgs).length) / 3.5);
 
-async function callTool(ctx: Ctx, name: string, a: any): Promise<string> {
-  switch (name) {
-    case "list_files": {
-      const files = git(["ls-files"]).split("\n").filter((f) => f && (!a.filter || f.includes(a.filter)));
-      return clip(files.join("\n"));
-    }
-    case "read_file": {
-      const abs = path.resolve(REPO, a.path);
-      if (!abs.startsWith(REPO)) return "ERROR: outside repo";
-      const lines = readText(abs, "\u0000missing").split("\n");
-      if (lines[0] === "\u0000missing") return "ERROR: file not found";
-      const s = Math.max(1, a.start ?? 1), e = Math.min(lines.length, a.end ?? lines.length);
-      return clip(lines.slice(s - 1, e).map((l, i) => `${s + i}\t${l}`).join("\n"));
-    }
-    case "grep":
-      return clip(git(["grep", "-n", "-I", "-E", "--max-count=50", a.pattern, ...(a.path ? ["--", a.path] : [])]) || "(no matches)", 40_000);
-    case "git": {
-      const args: string[] = a.args ?? [];
-      if (!["status", "diff", "log", "show", "branch"].includes(args[0])) return "ERROR: only status/diff/log/show/branch allowed";
-      if (args.some((x) => /^--?(output|exec|delete|force|D|d|m|M)$/.test(x) || x.startsWith("--output"))) return "ERROR: flag not allowed";
-      return clip(git(args) || "(empty)");
-    }
-    case "update_notes":
-      fs.writeFileSync(NOTES[a.file], a.content);
-      return `saved ${a.file}`;
-    case "new_session":
-      sessions[a.name] = sessions[a.name] ?? { purpose: a.purpose, created: new Date().toISOString() };
-      writeJson(P.sessions, sessions);
-      return `session '${a.name}' ready`;
-    case "list_sessions":
-      return JSON.stringify(Object.fromEntries(Object.entries(sessions).map(([k, v]) => [k, { purpose: v.purpose, started: !!v.id }])), null, 2);
-    case "ask_claude":
-    case "implement": {
-      const hit = forbiddenHit(ctx.cfg, a.prompt);
-      if (hit >= 0) return `BLOCKED: the prompt contains content the user forbids sharing with Claude (rule #${hit + 1} in config.forbidden). Rephrase without it.`;
-      if (name === "ask_claude" && ++ctx.asks > ctx.cfg.maxAskRounds)
-        return `LIMIT: ${ctx.cfg.maxAskRounds} consultation rounds used for this task. Decide with what you have, implement, or escalate_to_user.`;
-      const mode = name === "ask_claude" ? "ask" : "implement";
-      say(`  → Claude [${a.session}] ${mode}…`);
-      log(`→ Claude (${mode}, session ${a.session})`, a.prompt);
-      const before = mode === "implement" ? statusMap() : new Map();
-      let result = await runClaude(ctx.cfg, a.session, a.prompt, mode);
-      log(`← Claude (${a.session})`, result);
-      if (mode === "implement") {
-        const issues = guardCheck(before);
-        if (issues.length) {
-          const warn = `\n\nGUARD — these changes need the user's approval before you continue:\n- ${issues.join("\n- ")}\nEither escalate_to_user now, or have Claude revert them.`;
-          log("GUARD", warn);
-          result += warn;
-        }
-      }
-      return clip(result);
-    }
-    case "escalate_to_user": {
-      log("Kimi → user (escalation)", a.question);
-      say(`\n❓ Kimi pita:\n${a.question}\n`);
-      let ans: string;
-      try { ans = await ctx.rl.question("ti> "); }
-      catch { return "USER UNAVAILABLE: do not make the change that needed approval. Finish and report what is waiting for the user."; }
-      log("user → Kimi", ans);
-      return `USER ANSWER: ${ans}`;
-    }
-    case "finish":
-      ctx.done = a.report;
-      return "ok";
+export class Lead {
+  readonly repo: string;
+  readonly cfg: Config;
+  readonly P: Paths;
+  readonly claudeBin: string;
+  sessions: Record<string, Session>;
+  kimiUsd = 0;
+  claudeUsd = 0;
+
+  private hooks: LeadHooks;
+  private abort?: AbortController;
+  private active?: ClaudeRun;
+  private running = false;
+  private stopped = false;
+  private warnedDirty = false;
+
+  constructor(repo: string, hooks: LeadHooks) {
+    this.repo = repo;
+    this.hooks = hooks;
+    const { cfg, P } = init(repo);
+    this.cfg = cfg;
+    this.P = P;
+    this.claudeBin = resolveClaudeBin(cfg.claude.path);
+    this.sessions = readJson(P.sessions, {});
   }
-  return `ERROR: unknown tool ${name}`;
-}
 
-// ───────────────────────── Kimi loop ─────────────────────────
+  get busy(): boolean { return this.running; }
+  get claudeActive(): boolean { return !!this.active; }
 
-function systemPrompt(): string {
-  const sess = Object.entries(sessions).map(([k, v]) => `- ${k}: ${v.purpose}`).join("\n") || "(none yet)";
-  return `You are the technical lead of this repository (${REPO}). The user is your boss. Claude Code is your engineer.
+  /** Stop the current task: aborts Kimi's request and kills the running Claude process. */
+  stop(): void {
+    this.stopped = true;
+    this.abort?.abort();
+    this.active?.stop();
+  }
+
+  /** Send a message from the user straight into the running Claude session. */
+  interject(text: string): boolean {
+    if (!this.active) return false;
+    this.log("user → Claude (interjection)", text);
+    return this.active.interject(text);
+  }
+
+  newConversation(): void { writeJson(this.P.history, []); }
+
+  listSessions(): string {
+    const rows = Object.entries(this.sessions).map(([k, v]) => [k, { purpose: v.purpose, started: !!v.id, id: v.id }]);
+    return rows.length ? JSON.stringify(Object.fromEntries(rows), null, 2) : "(nema sesija)";
+  }
+
+  async run(userMsg: string): Promise<string> {
+    if (this.running) throw new Error("Kimi već radi na zadatku");
+    this.running = true;
+    this.stopped = false;
+    this.kimiUsd = 0;
+    this.claudeUsd = 0;
+    try {
+      return await this.runTask(userMsg);
+    } finally {
+      this.running = false;
+      this.abort = undefined;
+      this.active = undefined;
+    }
+  }
+
+  // ───────────── internals ─────────────
+
+  private emit(e: LeadEvent) { this.hooks.emit(e); }
+
+  private log(section: string, body: string) {
+    fs.appendFileSync(this.P.log, `\n## ${new Date().toISOString()} — ${section}\n\n${body.trim()}\n`);
+  }
+
+  private loadTurns(): Turn[] {
+    const h = readJson<unknown[]>(this.P.history, []);
+    return Array.isArray(h) ? (h.filter((t: any) => typeof t?.user === "string" && typeof t?.report === "string") as Turn[]) : [];
+  }
+
+  private saveTurn(user: string, report: string) {
+    const turns = [...this.loadTurns(), { user, report, at: new Date().toISOString() }];
+    writeJson(this.P.history, turns.slice(-50));
+  }
+
+  private systemPrompt(): string {
+    const sess = Object.entries(this.sessions).map(([k, v]) => `- ${k}: ${v.purpose}`).join("\n") || "(none yet)";
+    return `You are the technical lead of the repository at ${this.repo}. The user is your boss. Claude Code is your engineer.
+
+Your main job: turn what the user says (often casual, often in Bosnian) into precise technical tasks that Claude Code understands and implements well, and keep to yourself what Claude does not need to know.
 
 How you work:
-- You never write code yourself. You understand the goal, read the repo as needed, and drive Claude Code.
-- You alone decide what Claude sees. Write Claude precise, technical prompts in English. Do not forward the user's messages; translate them into engineering tasks within the user's rules below.
-- Typical flow: consult Claude (ask_claude) for options/trade-offs when the approach is not obvious → choose according to the goal and the user's rules → implement → review with git diff/status → send fixes back if needed → finish with a report.
-- Work autonomously until the goal is reached. Only escalate_to_user for: new/changed dependencies, database schema changes, deleting files, anything touching production/deployment, or a goal that is genuinely ambiguous. If a GUARD warning appears, you must escalate or have it reverted.
-- Use separate Claude sessions per workstream; reuse a session when continuing the same work.
-- Keep your notes current: PROJECT (what the project is, architecture, conventions), TASKS (what is being worked on and status), DECISIONS (decisions and why). They are your long-term memory.
-- Talk to the user in the language they write in (usually Bosnian). Reports: short — what was done, why, what's open.
+- You never write code. Claude Code does all coding and deep investigation.
+- You may read code (read_file, grep, list_files, git) to understand where and what, so your prompts are concrete. Read small pieces. Old read results are pruned from your context automatically; re-read if you need them again. For broad investigation, ask Claude instead.
+- Prompts to Claude: English, self-contained, technical: goal, relevant files/functions, constraints, what "done" means, which checks to run. Never forward the user's words verbatim. Never include anything from PRIVATE or anything the user's rules forbid.
+- Flow: if the approach is not obvious, ask_claude for 2-3 options → choose by the goal and the user's rules → implement → review (Claude's report + git diff) → send fixes if needed → finish.
+- Claude's replies to you are short reports. The user watches Claude's full session live, so do not repeat Claude's details back to them.
+- Work autonomously until done. escalate_to_user only for: new/changed dependencies, database schema, deleting files, production/deployment, or a genuinely ambiguous goal. A GUARD warning means you must escalate or have Claude revert.
+- One Claude session per workstream (new_session); reuse a session to continue the same work, it remembers.
+- The raw conversation is not kept between tasks; your notes are your long-term memory. Before finishing, update TASKS/DECISIONS briefly if something changed, and PROJECT when you learn lasting facts. Keep notes compact.
+- When the user tells you something private (clients, business context, people, money), save it in PRIVATE. Only you see PRIVATE.
+- If the user only asks a question or chats, answer directly, no tools needed.
+- Talk to the user in their language (usually Bosnian). Be brief. Reports: what was done, why, what is open.
 
 USER'S RULES (highest priority; they override everything above except safety). They define how you may talk to Claude and what Claude may know:
 <rules>
-${readText(P.rules).trim() || "(none)"}
+${readText(this.P.rules).trim() || "(none)"}
 </rules>
 
+PRIVATE (only for you; never put any of this into a prompt for Claude):
+<private>
+${readText(this.P.private).trim() || "(empty)"}
+</private>
+
 <notes name="PROJECT">
-${readText(P.project).trim()}
+${readText(this.P.project).trim()}
 </notes>
 <notes name="TASKS">
-${readText(P.tasks).trim()}
+${readText(this.P.tasks).trim()}
 </notes>
 <notes name="DECISIONS">
-${readText(P.decisions).trim()}
+${readText(this.P.decisions).trim()}
 </notes>
 
 Claude sessions:
 ${sess}`;
-}
+  }
 
-let kimiCostUsd = 0;
-
-async function kimi(cfg: Config, messages: any[]): Promise<any> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error("OPENROUTER_API_KEY nije postavljen");
-  for (let attempt = 1; ; attempt++) {
-    const res = await fetch(`${process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1"}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Title": "kimi-lead" },
-      body: JSON.stringify({ model: cfg.model, messages: [{ role: "system", content: systemPrompt() }, ...messages], tools: TOOLS, usage: { include: true } }),
+  /** silent: internal call (context checkpoint) — its text is not shown to the user. */
+  private async callKimi(system: string, msgs: Msg[], effort: string | null, toolChoice?: "none", silent = false) {
+    this.abort = new AbortController();
+    this.emit({ type: "kimi-start" });
+    const r = await kimiCall({
+      cfg: this.cfg, system, messages: msgs, tools: TOOLS, effort, toolChoice, signal: this.abort.signal,
+      onText: (delta) => { if (!silent) this.emit({ type: "kimi-text", delta }); },
+      onReasoning: (delta) => this.emit({ type: "kimi-reasoning", delta }),
     });
-    if (res.ok) {
-      const data: any = await res.json();
-      kimiCostUsd += Number(data.usage?.cost || 0);
-      const msg = data.choices?.[0]?.message;
-      if (!msg) throw new Error(`OpenRouter: prazan odgovor ${JSON.stringify(data).slice(0, 500)}`);
-      return msg;
+    this.kimiUsd += r.costUsd;
+    this.emit({ type: "kimi-end", promptTokens: r.promptTokens, cachedTokens: r.cachedTokens });
+    return r.msg;
+  }
+
+  /** Keep Kimi's context small: prune old reads/reasoning, drop earlier turns, then summarize the task. */
+  private async fitContext(system: string, t: Task): Promise<void> {
+    const { softTokens, hardTokens } = this.cfg.context;
+    if (estTokens(system, t.msgs) <= softTokens) return;
+
+    const reads = t.msgs
+      .map((m, i) => (m.role === "tool" && m.tool_call_id && t.readLabels.has(m.tool_call_id) && !m.content.startsWith("[pruned") ? i : -1))
+      .filter((i) => i >= 0);
+    for (const i of reads.slice(0, -2)) {
+      const m = t.msgs[i];
+      t.msgs[i] = { ...m, content: `[pruned to save context: ${t.readLabels.get(m.tool_call_id!)}; read again if you need it]` };
     }
-    if (attempt >= 4 || ![408, 429, 500, 502, 503, 504].includes(res.status)) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 500)}`);
-    await new Promise((r) => setTimeout(r, 2000 * attempt));
-  }
-}
+    const lastAssistant = t.msgs.map((m) => m.role).lastIndexOf("assistant");
+    t.msgs = t.msgs.map((m, i) => {
+      if (m.role !== "assistant" || !m.reasoning || i === lastAssistant) return m;
+      const { reasoning: _r, ...rest } = m;
+      return rest;
+    });
+    if (estTokens(system, t.msgs) <= hardTokens) return;
 
-function trimHistory(cfg: Config, h: any[]): any[] {
-  while (JSON.stringify(h).length > cfg.historyCharLimit) {
-    const next = h.findIndex((m, i) => i > 0 && m.role === "user");
-    if (next <= 0) break;
-    h = h.slice(next);
-  }
-  return h;
-}
-
-function say(s: string) { stdout.write(s + "\n"); }
-
-async function runTask(cfg: Config, rl: readline.Interface, history: any[], userMsg: string): Promise<any[]> {
-  log("USER", userMsg);
-  history.push({ role: "user", content: userMsg });
-  const ctx: Ctx = { cfg, asks: 0, rl };
-  for (let step = 0; step < cfg.maxSteps && !ctx.done; step++) {
-    const msg = await kimi(cfg, history);
-    const { role, content, tool_calls, reasoning, reasoning_details } = msg;
-    history.push({ role, content: content ?? "", ...(tool_calls ? { tool_calls } : {}), ...(reasoning ? { reasoning } : {}), ...(reasoning_details ? { reasoning_details } : {}) });
-    if (!tool_calls?.length) { ctx.done = content || "(Kimi nije ništa odgovorio)"; break; }
-    if (content?.trim()) say(`  · ${content.trim().split("\n")[0].slice(0, 160)}`);
-    for (const tc of tool_calls) {
-      let args: any = {};
-      try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* keep empty */ }
-      let out: string;
-      try { out = await callTool(ctx, tc.function.name, args); } catch (e: any) { out = `ERROR: ${e.message}`; }
-      history.push({ role: "tool", tool_call_id: tc.id, content: out });
+    if (t.priorCount > 0) {
+      t.msgs = t.msgs.slice(t.priorCount);
+      t.priorCount = 0;
+      if (estTokens(system, t.msgs) <= hardTokens) return;
     }
-    writeJson(P.history, history);
+
+    this.emit({ type: "notice", text: "Kimijev kontekst je pun, sažimam dosadašnji rad na zadatku…" });
+    const summary = await this.callKimi(system, [...t.msgs, { role: "user", content: CHECKPOINT }], "low", "none", true);
+    this.log("Kimi context checkpoint", summary.content);
+    t.msgs = [{ role: "user", content: `${t.goal}\n\n[Context checkpoint. Your own summary of progress on this task so far:]\n${summary.content}` }];
+    t.readLabels.clear();
   }
-  const report = ctx.done ?? `Stao sam nakon ${cfg.maxSteps} koraka bez završetka. Pogledaj .kimi/log.md.`;
-  log("Kimi → user (report)", report);
-  say(`\n${report}\n`);
-  say(`  [trošak ovog zadatka do sad — Kimi: $${kimiCostUsd.toFixed(3)}, Claude: $${claudeCostUsd.toFixed(3)}]`);
-  writeJson(P.history, history);
-  return history;
+
+  private async runTask(userMsg: string): Promise<string> {
+    this.log("USER", userMsg);
+    if (!this.warnedDirty) {
+      this.warnedDirty = true;
+      const dirty = dirtyFiles(this.repo).size;
+      if (dirty) this.emit({ type: "notice", text: `Radni folder ima ${dirty} necommitanih fajlova. Claudeove izmjene će se miješati s tvojima; najbolje je commitati ili raditi na novoj grani.` });
+    }
+
+    const system = this.systemPrompt(); // frozen for the whole task → stable prefix for prompt caching
+    const prior: Msg[] = this.loadTurns().slice(-this.cfg.context.keepTaskPairs)
+      .flatMap((t): Msg[] => [{ role: "user", content: t.user }, { role: "assistant", content: t.report }]);
+    const t: Task = { goal: userMsg, msgs: [...prior, { role: "user", content: userMsg }], priorCount: prior.length, readLabels: new Map(), asks: 0, streamed: false };
+    let afterAsk = false;
+
+    try {
+      for (let step = 0; step < this.cfg.maxSteps && !t.done && !this.stopped; step++) {
+        await this.fitContext(system, t);
+        const msg = await this.callKimi(system, t.msgs, afterAsk ? this.cfg.decisionEffort : this.cfg.reasoningEffort);
+        t.msgs.push(msg);
+        if (!msg.tool_calls?.length) {
+          t.done = msg.content.trim() || "(Kimi nije ništa odgovorio)";
+          t.streamed = !!msg.content.trim();
+          break;
+        }
+        afterAsk = false;
+        for (const tc of msg.tool_calls) {
+          if (this.stopped) break;
+          let args: any = {};
+          try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* keep empty */ }
+          const name = tc.function.name;
+          let out: string;
+          try { out = await this.callTool(t, name, args); } catch (e: any) { out = `ERROR: ${e.message}`; }
+          if (READ_TOOLS.has(name)) t.readLabels.set(tc.id, this.toolLabel(name, args));
+          if (name === "ask_claude") afterAsk = true;
+          t.msgs.push({ role: "tool", tool_call_id: tc.id, content: out });
+        }
+      }
+    } catch (e: any) {
+      if (!this.stopped) throw e;
+    }
+
+    const report = this.stopped
+      ? "Zaustavljeno."
+      : t.done ?? `Stao sam nakon ${this.cfg.maxSteps} koraka bez završetka. Pogledaj .kimi/log.md.`;
+    this.log("Kimi → user (report)", report);
+    this.saveTurn(userMsg, report);
+    this.emit({ type: "task-end", report, streamed: t.streamed && !this.stopped, kimiUsd: this.kimiUsd, claudeUsd: this.claudeUsd });
+    return report;
+  }
+
+  private toolLabel(name: string, a: any): string {
+    switch (name) {
+      case "read_file": return `read_file ${a.path ?? ""} ${a.start ?? 1}-${a.end ?? ""}`.trim();
+      case "grep": return `grep "${a.pattern ?? ""}"${a.path ? ` in ${a.path}` : ""}`;
+      case "list_files": return `list_files${a.filter ? ` (${a.filter})` : ""}`;
+      case "git": return `git ${(a.args ?? []).join(" ")}`;
+      default: return name;
+    }
+  }
+
+  private safeRel(p: unknown): string | null {
+    if (typeof p !== "string" || !p) return null;
+    const abs = path.resolve(this.repo, p);
+    const rel = path.relative(this.repo, abs);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    return rel.split(path.sep).join("/");
+  }
+
+  private forbiddenHit(text: string): number {
+    return this.cfg.forbidden.findIndex((r) => {
+      try { return new RegExp(r, "i").test(text); } catch { return text.toLowerCase().includes(r.toLowerCase()); }
+    });
+  }
+
+  private async callTool(t: Task, name: string, a: any): Promise<string> {
+    const { maxLines, maxChars, grepMax } = this.cfg.read;
+    const deny = this.cfg.claude.denyRead;
+    switch (name) {
+      case "list_files": {
+        this.emit({ type: "kimi-tool", name, label: `lista fajlova${a.filter ? ` (${a.filter})` : ""}` });
+        const files = git(this.repo, ["ls-files"]).split("\n").filter((f) => f && (!a.filter || f.includes(a.filter)));
+        const shown = files.slice(0, 300);
+        return (shown.join("\n") || "(no files)") + (files.length > shown.length ? `\n…and ${files.length - shown.length} more; use a filter` : "");
+      }
+      case "read_file": {
+        const rel = this.safeRel(a.path);
+        if (!rel) return "ERROR: path outside the repo";
+        if (isDenied(rel, deny)) return "ERROR: this file is in denyRead; you may not read it";
+        const text = readText(path.join(this.repo, rel), "\u0000missing");
+        if (text === "\u0000missing") return "ERROR: file not found";
+        const lines = text.split("\n");
+        const s = Math.max(1, a.start ?? 1);
+        const e = Math.min(lines.length, a.end ?? s + maxLines - 1, s + maxLines - 1);
+        this.emit({ type: "kimi-tool", name, label: `čita ${rel} ${s}–${e}` });
+        const body = lines.slice(s - 1, e).map((l, i) => `${s + i}\t${l.length > 500 ? l.slice(0, 500) + "…" : l}`).join("\n");
+        const more = e < lines.length ? `\n[lines ${s}-${e} of ${lines.length}; ask for another range if needed]` : "";
+        return clip(body, maxChars, "request a smaller range") + more;
+      }
+      case "grep": {
+        this.emit({ type: "kimi-tool", name, label: `traži "${a.pattern}"${a.path ? ` u ${a.path}` : ""}` });
+        const out = git(this.repo, ["grep", "-n", "-I", "-E", "--max-count=10", String(a.pattern ?? ""), ...(a.path ? ["--", a.path] : [])]);
+        if (out.startsWith("git error")) return out;
+        const lines = out.split("\n").filter((l) => l && !isDenied(l.split(":")[0], deny));
+        const shown = lines.slice(0, grepMax).map((l) => (l.length > 300 ? l.slice(0, 300) + "…" : l));
+        return (shown.join("\n") || "(no matches)") + (lines.length > shown.length ? `\n…${lines.length - shown.length} more matches; narrow the pattern or path` : "");
+      }
+      case "git": {
+        const args: string[] = Array.isArray(a.args) ? a.args.map(String) : [];
+        if (!["status", "diff", "log", "show", "branch"].includes(args[0])) return "ERROR: only status/diff/log/show/branch allowed";
+        if (args.some((x) => /^--?(output|exec|delete|force|D|d|m|M|c|C)$/.test(x) || x.startsWith("--output") || x.startsWith("--exec"))) return "ERROR: flag not allowed";
+        this.emit({ type: "kimi-tool", name, label: `git ${args.join(" ")}` });
+        return clip(git(this.repo, args) || "(empty)", maxChars, "use git diff --stat or git diff -- <file>");
+      }
+      case "update_notes": {
+        const file = a.file as NoteFile;
+        if (!NOTE_FILES.includes(file)) return "ERROR: unknown notes file";
+        const dest = { PROJECT: this.P.project, TASKS: this.P.tasks, DECISIONS: this.P.decisions, PRIVATE: this.P.private }[file];
+        fs.writeFileSync(dest, String(a.content ?? ""));
+        this.emit({ type: "kimi-tool", name, label: `ažurira bilješke: ${file}` });
+        return `saved ${file}`;
+      }
+      case "new_session": {
+        this.sessions[a.name] ??= { purpose: a.purpose, created: new Date().toISOString() };
+        writeJson(this.P.sessions, this.sessions);
+        this.emit({ type: "kimi-tool", name, label: `nova Claude sesija: ${a.name}` });
+        return `session '${a.name}' ready`;
+      }
+      case "list_sessions":
+        return this.listSessions();
+      case "ask_claude":
+      case "implement": {
+        const prompt = String(a.prompt ?? "");
+        const session = String(a.session || "main");
+        const hit = this.forbiddenHit(prompt);
+        if (hit >= 0) {
+          this.emit({ type: "blocked", reason: `Kimi je pokušao poslati Claudeu nešto što je zabranjeno (pravilo #${hit + 1} u config.forbidden). Blokirano.` });
+          this.log("BLOCKED", prompt);
+          return `BLOCKED: the prompt contains content the user forbids sharing with Claude (rule #${hit + 1} in config.forbidden). Rephrase without it.`;
+        }
+        if (name === "ask_claude" && ++t.asks > this.cfg.maxAskRounds) {
+          return `LIMIT: ${this.cfg.maxAskRounds} consultation rounds used for this task. Decide with what you have, implement, or escalate_to_user.`;
+        }
+        const mode: Mode = name === "ask_claude" ? "ask" : "implement";
+        const before = mode === "implement" ? snapshot(this.repo) : null;
+        this.emit({ type: "claude-start", session, mode, prompt });
+        this.log(`→ Claude (${mode}, session ${session})`, prompt);
+        const res = await this.runClaude(session, prompt, mode);
+        this.claudeUsd += res.costUsd;
+        this.log(`← Claude (${session})`, res.text);
+        this.emit({ type: "claude-end", session, result: res });
+        let out = `${res.isError ? "CLAUDE ERROR: " : ""}${clip(res.text, this.cfg.claude.reportMaxChars)}`;
+        if (before) {
+          const changes = changesSince(this.repo, before);
+          if (changes.length) out += `\n\nFILES CHANGED (from git): ${changes.map((c) => c.file).join(", ")}`;
+          const issues = guardIssues(changes);
+          if (issues.length) {
+            this.emit({ type: "guard", issues });
+            const warn = `\n\nGUARD: these changes need the user's approval before you continue:\n- ${issues.join("\n- ")}\nEither escalate_to_user now, or have Claude revert them.`;
+            this.log("GUARD", warn);
+            out += warn;
+          }
+        }
+        return out;
+      }
+      case "escalate_to_user": {
+        this.log("Kimi → user (escalation)", String(a.question ?? ""));
+        const ans = await this.hooks.askUser(String(a.question ?? ""));
+        if (ans === null) return "USER UNAVAILABLE: do not make the change that needed approval. Finish and report what is waiting for the user.";
+        this.log("user → Kimi", ans);
+        return `USER ANSWER: ${ans}`;
+      }
+      case "finish":
+        t.done = String(a.report ?? "");
+        return "ok";
+    }
+    return `ERROR: unknown tool ${name}`;
+  }
+
+  private async runClaude(session: string, prompt: string, mode: Mode): Promise<ClaudeResult> {
+    const s = (this.sessions[session] ??= { purpose: "(auto-created)", created: new Date().toISOString() });
+    const run = startClaude({
+      bin: this.claudeBin,
+      repo: this.repo,
+      args: buildArgs(this.cfg, mode, s.id),
+      prompt: withMode(mode, prompt),
+      onEvent: (event) => this.emit({ type: "claude-event", session, event }),
+    });
+    this.active = run;
+    const res = await run.done;
+    this.active = undefined;
+    if (res.isError && s.id && /No conversation found/i.test(res.text)) {
+      delete s.id; // session vanished → start fresh
+      writeJson(this.P.sessions, this.sessions);
+      return this.runClaude(session, `(Previous session context was lost; start fresh.)\n\n${prompt}`, mode);
+    }
+    if (res.sessionId) {
+      s.id = res.sessionId;
+      writeJson(this.P.sessions, this.sessions);
+    }
+    return res;
+  }
 }
-
-async function main() {
-  if (["-h", "--help"].includes(process.argv[2] ?? "")) {
-    say(`kimi-lead — pokreni u root folderu projekta.\n  kimi-lead            interaktivno\n  kimi-lead "zadatak"  jedan zadatak pa izlaz\nPotrebno: OPENROUTER_API_KEY, instaliran i prijavljen 'claude'.`);
-    return;
-  }
-  const cfg = init();
-  sessions = readJson(P.sessions, {});
-  let history: any[] = readJson(P.history, []);
-  const rl = readline.createInterface({ input: stdin, output: stdout });
-  say(`kimi-lead · ${REPO}\nKomande: /new (nova Kimi konverzacija), /sessions, /rules, /exit\nPravila: ${P.rules}\n`);
-
-  const oneShot = process.argv.slice(2).join(" ").trim();
-  if (oneShot) { await runTask(cfg, rl, trimHistory(cfg, history), oneShot); rl.close(); return; }
-
-  for (;;) {
-    const line = (await rl.question("ti> ")).trim();
-    if (!line) continue;
-    if (line === "/exit") break;
-    if (line === "/new") { history = []; writeJson(P.history, history); say("Nova konverzacija (bilješke i sesije ostaju)."); continue; }
-    if (line === "/sessions") { say(await callTool({ cfg, asks: 0, rl }, "list_sessions", {})); continue; }
-    if (line === "/rules") { say(readText(P.rules) || "(prazno)"); continue; }
-    kimiCostUsd = 0; claudeCostUsd = 0;
-    try { history = await runTask(cfg, rl, trimHistory(cfg, history), line); }
-    catch (e: any) { say(`Greška: ${e.message}`); }
-  }
-  rl.close();
-}
-
-main();

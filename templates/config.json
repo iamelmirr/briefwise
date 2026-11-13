@@ -1,12 +1,19 @@
 {
   "model": "moonshotai/kimi-k3.1-pro",
+  "provider": { "sort": "throughput" },
+  "reasoningEffort": "low",
+  "decisionEffort": "medium",
   "maxAskRounds": 3,
   "maxSteps": 60,
-  "historyCharLimit": 2000000,
+  "context": { "softTokens": 24000, "hardTokens": 40000, "keepTaskPairs": 8 },
+  "read": { "maxLines": 200, "maxChars": 12000, "grepMax": 40 },
   "claude": {
+    "path": null,
+    "userSettings": false,
     "model": null,
     "effort": null,
     "maxBudgetUsdPerCall": null,
+    "reportMaxChars": 6000,
     "implementAllow": ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
     "denyRead": [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"]
   },
