@@ -1,0 +1,54 @@
+<!doctype html>
+<!-- Dev preview of the webview outside VS Code: fake VS Code API + demo transcript.
+     Open dev/preview.html?theme=light|dark&state=live|empty|nokey|done after `npm run build`. -->
+<html lang="bs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="../dist/webview.css">
+<style>
+  /* subset of VS Code "Dark Modern" / "Light Modern" theme variables */
+  html.vscode-dark {
+    --vscode-editor-background: #1f1f1f; --vscode-editor-foreground: #cccccc; --vscode-foreground: #cccccc;
+    --vscode-descriptionForeground: #9d9d9d; --vscode-widget-border: #313131; --vscode-focusBorder: #0078d4;
+    --vscode-input-background: #313131; --vscode-input-border: #3c3c3c; --vscode-input-foreground: #cccccc; --vscode-input-placeholderForeground: #989898;
+    --vscode-button-background: #0078d4; --vscode-button-foreground: #ffffff; --vscode-button-hoverBackground: #026ec1;
+    --vscode-textLink-foreground: #4daafc; --vscode-textCodeBlock-background: #2b2b2b; --vscode-errorForeground: #f85149;
+    --vscode-menu-background: #1f1f1f; --vscode-menu-border: #454545; --vscode-menu-selectionBackground: #0078d4;
+    --vscode-gitDecoration-addedResourceForeground: #81b88b; --vscode-gitDecoration-deletedResourceForeground: #c74e39;
+    --vscode-font-family: "Segoe WPC", "Segoe UI", sans-serif; --vscode-font-size: 13px;
+    --vscode-editor-font-family: Consolas, "Courier New", monospace;
+  }
+  html.vscode-light {
+    --vscode-editor-background: #ffffff; --vscode-editor-foreground: #3b3b3b; --vscode-foreground: #3b3b3b;
+    --vscode-descriptionForeground: #6f6f6f; --vscode-widget-border: #e5e5e5; --vscode-focusBorder: #005fb8;
+    --vscode-input-background: #ffffff; --vscode-input-border: #cecece; --vscode-input-foreground: #3b3b3b; --vscode-input-placeholderForeground: #767676;
+    --vscode-button-background: #005fb8; --vscode-button-foreground: #ffffff; --vscode-button-hoverBackground: #0258a8;
+    --vscode-textLink-foreground: #005fb8; --vscode-textCodeBlock-background: #f3f3f3; --vscode-errorForeground: #f85149;
+    --vscode-gitDecoration-addedResourceForeground: #587c0c; --vscode-gitDecoration-deletedResourceForeground: #ad0707;
+    --vscode-font-family: "Segoe WPC", "Segoe UI", sans-serif; --vscode-font-size: 13px;
+    --vscode-editor-font-family: Consolas, "Courier New", monospace;
+  }
+</style>
+<title>Kimi Lead preview</title>
+</head>
+<body>
+<script src="demo.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.body.className = document.documentElement.className = q.get("theme") === "light" ? "vscode-light" : "vscode-dark";
+  const state = q.get("state") || "live";
+  window.acquireVsCodeApi = () => ({
+    getState: () => ({}), setState: () => {},
+    postMessage: (m) => {
+      console.log("→ extension", m);
+      if (m.type === "ready") {
+        window.postMessage({ type: "init", data: window.demoInit(state) }, "*");
+        if (q.get("top")) setTimeout(() => document.querySelectorAll(".claude-feed").forEach((f) => (f.scrollTop = 0)), 300);
+      }
+    },
+  });
+</script>
+<script src="../dist/webview.js"></script>
+</body>
+</html>

@@ -17,10 +17,16 @@ export type LeadEvent =
   | { type: "claude-start"; session: string; mode: Mode; prompt: string }
   | { type: "claude-event"; session: string; event: ClaudeEvent }
   | { type: "claude-end"; session: string; result: ClaudeResult }
+  | { type: "claude-files"; session: string; files: { file: string; code: string }[] }
   | { type: "guard"; issues: string[] }
   | { type: "blocked"; reason: string }
   | { type: "notice"; text: string }
   | { type: "task-end"; report: string; streamed: boolean; kimiUsd: number; claudeUsd: number };
+
+export type LeadOptions = {
+  templatesDir?: string;            // where RULES.md etc. templates live (default: ../templates next to src)
+  apiKey?: () => string | undefined; // OpenRouter key provider (default: OPENROUTER_API_KEY)
+};
 
 export type LeadHooks = {
   emit(e: LeadEvent): void;
@@ -76,16 +82,18 @@ export class Lead {
   claudeUsd = 0;
 
   private hooks: LeadHooks;
+  private opts: LeadOptions;
   private abort?: AbortController;
   private active?: ClaudeRun;
   private running = false;
   private stopped = false;
   private warnedDirty = false;
 
-  constructor(repo: string, hooks: LeadHooks) {
+  constructor(repo: string, hooks: LeadHooks, opts: LeadOptions = {}) {
     this.repo = repo;
     this.hooks = hooks;
-    const { cfg, P } = init(repo);
+    this.opts = opts;
+    const { cfg, P } = init(repo, opts.templatesDir);
     this.cfg = cfg;
     this.P = P;
     this.claudeBin = resolveClaudeBin(cfg.claude.path);
@@ -110,6 +118,13 @@ export class Lead {
   }
 
   newConversation(): void { writeJson(this.P.history, []); }
+
+  branch(): string {
+    const b = git(this.repo, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+    return b.startsWith("git error") ? "" : b;
+  }
+
+  sessionId(name: string): string | undefined { return this.sessions[name]?.id; }
 
   listSessions(): string {
     const rows = Object.entries(this.sessions).map(([k, v]) => [k, { purpose: v.purpose, started: !!v.id, id: v.id }]);
@@ -197,7 +212,7 @@ ${sess}`;
     this.abort = new AbortController();
     this.emit({ type: "kimi-start" });
     const r = await kimiCall({
-      cfg: this.cfg, system, messages: msgs, tools: TOOLS, effort, toolChoice, signal: this.abort.signal,
+      cfg: this.cfg, apiKey: this.opts.apiKey?.(), system, messages: msgs, tools: TOOLS, effort, toolChoice, signal: this.abort.signal,
       onText: (delta) => { if (!silent) this.emit({ type: "kimi-text", delta }); },
       onReasoning: (delta) => this.emit({ type: "kimi-reasoning", delta }),
     });
@@ -392,7 +407,10 @@ ${sess}`;
         let out = `${res.isError ? "CLAUDE ERROR: " : ""}${clip(res.text, this.cfg.claude.reportMaxChars)}`;
         if (before) {
           const changes = changesSince(this.repo, before);
-          if (changes.length) out += `\n\nFILES CHANGED (from git): ${changes.map((c) => c.file).join(", ")}`;
+          if (changes.length) {
+            this.emit({ type: "claude-files", session, files: changes });
+            out += `\n\nFILES CHANGED (from git): ${changes.map((c) => c.file).join(", ")}`;
+          }
           const issues = guardIssues(changes);
           if (issues.length) {
             this.emit({ type: "guard", issues });

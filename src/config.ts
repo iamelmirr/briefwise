@@ -93,10 +93,9 @@ function merge<T>(base: T, over: unknown): T {
   return out as T;
 }
 
-const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
-
 /** Create .kimi/ from templates if needed, keep it out of git, and load the config. */
-export function init(repo: string): { cfg: Config; P: Paths } {
+export function init(repo: string, templatesDir?: string): { cfg: Config; P: Paths } {
+  const TEMPLATES = templatesDir ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
   const P = kimiPaths(repo);
   fs.mkdirSync(P.dir, { recursive: true });
   const files: [string, string][] = [

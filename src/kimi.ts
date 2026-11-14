@@ -17,6 +17,7 @@ const RETRY = [408, 429, 500, 502, 503, 504];
 
 export async function kimiCall(o: {
   cfg: Config;
+  apiKey?: string;
   system: string;
   messages: Msg[];
   tools: unknown[];
@@ -26,8 +27,8 @@ export async function kimiCall(o: {
   onText?(delta: string): void;
   onReasoning?(delta: string): void;
 }): Promise<KimiResult> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error("OPENROUTER_API_KEY nije postavljen");
+  const key = o.apiKey || process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("Nema OpenRouter API ključa (OPENROUTER_API_KEY)");
   const body = JSON.stringify({
     model: o.cfg.model,
     messages: [{ role: "system", content: o.system }, ...o.messages],

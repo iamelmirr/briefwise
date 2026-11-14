@@ -17,7 +17,27 @@ export OPENROUTER_API_KEY=sk-or-...      # Windows: setx OPENROUTER_API_KEY sk-o
 Nema runtime zavisnosti (`npm install` treba samo za `npm run typecheck`).
 `claude` se traži redom: `claude.path` u configu, `CLAUDE_BIN`, `PATH`, pa `~/.local/bin` (gdje ga stavlja native installer, i na Windowsu).
 
-## Korištenje
+## VS Code ekstenzija
+
+Panel u VS Codeu: lijevo pričaš s Kimijem, desno gledaš Claude Code uživo (brief koji je dobio od Kimija, svaki fajl, komandu, diff), s tabom po sesiji.
+
+```bash
+cd kimi-lead/extension
+npm install
+npm run package                               # napravi kimi-lead.vsix
+code --install-extension kimi-lead.vsix
+```
+
+Otvori folder projekta i pritisni `Ctrl+Alt+K` (ili komanda **Kimi Lead: Otvori Kimija**). OpenRouter ključ zalijepiš u panel; čuva se u VS Code SecretStorage, ne u projektu.
+
+- Dok Claude radi, ispod njegove sesije možeš mu pisati direktno (upadanje). `Esc` ili **Zaustavi** prekida sve.
+- Klik na Kimijevu karticu predaje skače na taj Claudeov rad; klik na fajl ga otvara; **Diff** otvara pravi diff prema zadnjem commitu.
+- **Nastavi u terminalu** otvara tu Claude sesiju interaktivno (`claude --resume`).
+- Razgovor ostaje i nakon zatvaranja panela (`.kimi/transcript.json`); **Nova** počinje iznova, bilješke i sesije ostaju.
+
+Za razvoj UI-ja bez VS Codea: `npm run build`, pa otvori `extension/dev/preview.html?state=live` (stanja: `live`, `done`, `guard`, `nokey`, `empty`; `&theme=light`).
+
+## Korištenje u terminalu
 
 ```bash
 cd ~/posao/neki-projekat
