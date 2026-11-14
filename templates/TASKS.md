@@ -1,3 +1,3 @@
-# Zadaci
+# Tasks
 
-(Kimi vodi: na čemu se radi i status.)
+(The lead keeps track: what is being worked on and its status.)

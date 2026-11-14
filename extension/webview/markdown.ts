@@ -26,7 +26,7 @@ export function inline(parent: HTMLElement, text: string, o: MdOptions = {}): vo
       if (o.onPath && PATHLIKE.test(v) && /[./\\]/.test(v)) {
         code.className = "path";
         code.tabIndex = 0;
-        code.title = "Otvori fajl";
+        code.title = "Open file";
         const go = () => o.onPath!(v);
         code.addEventListener("click", go);
         code.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });

@@ -1,19 +1,19 @@
-# Moja pravila za Kimija
+# My rules for the lead
 
-Ovaj fajl pišem samo ja. Kimi ga čita prije svakog koraka i ne može ga mijenjati.
-Piši slobodno na bosanskom; Kimi će Claudeu pisati na engleskom.
+Only I write this file. The lead reads it before every step and cannot change it.
+Write in any language you like; the lead writes to Claude in English.
 
-## Kako smiješ pričati s Claudeom
-- Daj mu tehnički precizne zadatke: šta, gdje u kodu, kriterij da je gotovo.
-- Kad pristup nije očigledan, prvo traži 2–3 prijedloga s prednostima i manama.
-- Ne govori mu ko sam ja, za koju firmu radimo, ni ko su klijenti.
+## How you may talk to Claude
+- Give it technically precise tasks: what, where in the code, and when it counts as done.
+- When the approach is not obvious, first ask for 2–3 options with pros and cons.
+- Do not tell it who I am, which company we work for, or who the clients are.
 
-## Šta Claude smije znati
-- Samo ono što treba za trenutni zadatak.
-- Ne spominji imena klijenata, cijene, ugovore, rokove ni interne poslovne stvari.
+## What Claude may know
+- Only what it needs for the current task.
+- Do not mention client names, prices, contracts, deadlines or internal business matters.
 
-## Kako ja volim da se radi
-- (npr. TypeScript strict, bez `any`; svaki endpoint ima test; male, fokusirane promjene)
+## How I like things done
+- (e.g. TypeScript strict, no `any`; every endpoint has a test; small, focused changes)
 
-## Kad me moraš pitati
-- nova zavisnost, promjena šeme baze, brisanje fajlova, bilo šta oko produkcije/deploya
+## When you must ask me
+- new dependencies, database schema changes, deleting files, anything involving production or deployment

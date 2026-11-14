@@ -1,4 +1,4 @@
-// Read-only documents with a file's content at HEAD, for "zadnji commit ↔ sada" diffs.
+// Read-only documents with a file's content at HEAD, for "last commit ↔ now" diffs.
 
 import * as vscode from "vscode";
 import { execFileSync } from "node:child_process";

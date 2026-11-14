@@ -44,6 +44,7 @@ Hard rules unless the task text explicitly says the change is APPROVED BY THE US
 - do not delete files
 - do not touch deployment, CI or production configuration
 If a good solution needs one of these, stop and explain why instead of doing it.
+You already run in the repository root. Use one simple command per Bash call: no \`cd\`, no \`&&\` or \`;\` chains, no pipes. Compound commands are denied by the permission system.
 Every message from the lead starts with a [MODE: ...] line. It applies to that message only and replaces any earlier mode in this session.
 The lead reads only your final message, so end every reply with a compact REPORT (max ~150 words): what you did or found, files changed, commands/tests run with results, open questions or risks.`;
 
@@ -52,9 +53,22 @@ const MODE_LINE: Record<Mode, string> = {
   implement: "[MODE: IMPLEMENT. For this message you may edit files; any earlier read-only CONSULT mode no longer applies. Make the changes, keep them focused, run the relevant checks you are allowed to run.]",
 };
 
-/** The lead's prompt as sent to Claude, with the per-message mode line. */
-export function withMode(mode: Mode, prompt: string): string {
-  return `${MODE_LINE[mode]}\n\n${prompt}`;
+/** "Bash(npm test:*)" -> "npm test …"; other tool rules are left as they are. */
+export function describeAllowed(rules: string[]): string[] {
+  return rules.map((r) => {
+    const m = /^Bash\((.+?)(:\*)?\)$/.exec(r);
+    return m ? `${m[1]}${m[2] ? " …" : ""}` : r;
+  });
+}
+
+/** The lead's prompt as sent to Claude, with the per-message mode line (and, when implementing, the commands it may run). */
+export function withMode(mode: Mode, prompt: string, implementAllow: string[] = []): string {
+  if (mode !== "implement") return `${MODE_LINE[mode]}\n\n${prompt}`;
+  const cmds = describeAllowed(implementAllow.filter((r) => r.startsWith("Bash(")));
+  const allowed = cmds.length
+    ? `[ALLOWED COMMANDS: ${cmds.map((x) => `\`${x}\``).join(", ")}, plus git status/diff/log/show and ls. Any other command is denied automatically, so do not try others. Use these for checks.]`
+    : "[ALLOWED COMMANDS: only git status/diff/log/show and ls. You cannot run tests or builds; say so in your report.]";
+  return `${MODE_LINE[mode]}\n${allowed}\n\n${prompt}`;
 }
 
 const READ_ONLY = ["Read", "Grep", "Glob", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(ls:*)"];

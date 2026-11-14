@@ -7,7 +7,7 @@ import { BASE_SCHEME, BaseContentProvider } from "./base-content.ts";
 async function pickRepo(): Promise<string | undefined> {
   const folders = vscode.workspace.workspaceFolders ?? [];
   if (!folders.length) {
-    void vscode.window.showWarningMessage("Otvori folder projekta (File → Open Folder) pa pokreni Kimi Lead.");
+    void vscode.window.showWarningMessage("Open a project folder (File → Open Folder), then start Kimi Lead.");
     return;
   }
   if (folders.length === 1) return folders[0].uri.fsPath;
@@ -15,7 +15,7 @@ async function pickRepo(): Promise<string | undefined> {
   const preferred = active && vscode.workspace.getWorkspaceFolder(active);
   const pick = await vscode.window.showQuickPick(
     folders.map((f) => ({ label: f.name, description: f.uri.fsPath, picked: f === preferred })),
-    { placeHolder: "Za koji projekat otvaraš Kimija?" },
+    { placeHolder: "Which project should Kimi Lead open?" },
   );
   return pick?.description;
 }
@@ -25,11 +25,11 @@ export function activate(ctx: vscode.ExtensionContext): void {
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = "kimiLead.open";
-  const idle = () => { status.text = "$(comment-discussion) Kimi"; status.tooltip = "Otvori Kimi Lead (Ctrl+Alt+K)"; };
+  const idle = () => { status.text = "$(comment-discussion) Kimi Lead"; status.tooltip = "Open Kimi Lead (Ctrl+Alt+K)"; };
   idle();
   status.show();
   ctx.subscriptions.push(status, KimiPanel.busyChanged.event((busy) => {
-    if (busy) { status.text = "$(loading~spin) Kimi radi"; status.tooltip = "Kimi i Claude rade. Klikni za prikaz."; }
+    if (busy) { status.text = "$(loading~spin) Kimi Lead: working"; status.tooltip = "The lead and Claude are working. Click to show."; }
     else idle();
   }));
 
@@ -40,20 +40,20 @@ export function activate(ctx: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("kimiLead.setApiKey", async () => {
       const key = await vscode.window.showInputBox({
-        title: "OpenRouter API ključ",
-        prompt: "Čuva se u sigurnom spremištu VS Codea, ne u projektu.",
+        title: "OpenRouter API key",
+        prompt: "Kept in VS Code's secret storage, not in the project.",
         password: true,
         ignoreFocusOut: true,
         placeHolder: "sk-or-…",
       });
       if (key?.trim()) {
         await ctx.secrets.store(KEY_SECRET, key.trim());
-        void vscode.window.showInformationMessage("OpenRouter ključ je sačuvan.");
+        void vscode.window.showInformationMessage("OpenRouter key saved.");
       }
     }),
     vscode.commands.registerCommand("kimiLead.clearApiKey", async () => {
       await ctx.secrets.delete(KEY_SECRET);
-      void vscode.window.showInformationMessage("OpenRouter ključ je obrisan.");
+      void vscode.window.showInformationMessage("OpenRouter key removed.");
     }),
     vscode.commands.registerCommand("kimiLead.stop", () => KimiPanel.current?.stop()),
     vscode.commands.registerCommand("kimiLead.newConversation", () => KimiPanel.current?.newConversation()),

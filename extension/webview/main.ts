@@ -1,6 +1,7 @@
-// Kimi Lead webview: left = conversation with Kimi, right = Claude Code sessions, live.
+// Kimi Lead webview: left = conversation with the lead model, right = Claude Code sessions, live.
 
-import type { FromWebview, InitData, NoteName, ToWebview, UIEvent } from "../src/protocol.ts";
+import type { FromWebview, InitData, ModelInfo, NoteName, ToWebview, UIEvent } from "../src/protocol.ts";
+import { leadName } from "../../src/names.ts";
 import { icon } from "./icons.ts";
 import { renderMarkdown, type MdOptions } from "./markdown.ts";
 import { diffStats, lineDiff } from "./diff.ts";
@@ -45,6 +46,8 @@ const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-dig
 // ───────────── state ─────────────
 
 let info: InitData | null = null;
+/** Display name of the lead model ("Kimi", "Qwen", "GLM"…); follows the chosen model. */
+let LN = "Kimi";
 let busy = false;
 let replaying = false;
 let lastUserTs = 0;
@@ -68,71 +71,98 @@ let thinking: { el: HTMLElement; ticker: HTMLElement; text: string } | null = nu
 // ───────────── shell ─────────────
 
 const statusDot = h("span", { class: "status-dot" });
-const statusText = h("span", { class: "status-text" }, "Spreman");
+const statusText = h("span", { class: "status-text" }, "Ready");
 const status = h("div", { class: "status", role: "status", "aria-live": "polite" }, statusDot, statusText);
 const repoName = h("span", { class: "repo-name" });
 const branchName = h("span", { class: "branch-name" });
-const stopBtn = h("button", { class: "btn btn-stop", title: "Zaustavi Kimija i Claudea (Esc)", onclick: () => post({ type: "stop" }) }, icon("stop"), "Zaustavi");
+const stopBtn = h("button", { class: "btn btn-stop", title: "Stop the lead model and Claude (Esc)", onclick: () => post({ type: "stop" }) }, icon("stop"), "Stop");
 
 function noteBtn(name: NoteName, label: string, ic: string, title: string) {
   return h("button", { class: "btn btn-ghost", title, onclick: () => post({ type: "openNote", name }) }, icon(ic), h("span", { class: "btn-label" }, label));
 }
 const moreMenu = h("div", { class: "menu", role: "menu", hidden: true },
-  ...([["PROJECT", "Bilješke o projektu"], ["TASKS", "Zadaci"], ["DECISIONS", "Odluke"], ["config", "Podešavanja (config.json)"], ["log", "Cijeli log"]] as [NoteName, string][])
+  ...([["PROJECT", "Project notes"], ["TASKS", "Tasks"], ["DECISIONS", "Decisions"], ["config", "Settings (config.json)"], ["log", "Full log"]] as [NoteName, string][])
     .map(([name, label]) => h("button", { class: "menu-item", role: "menuitem", onclick: () => { moreMenu.hidden = true; post({ type: "openNote", name }); } }, label)),
 );
-const moreBtn = h("button", { class: "btn btn-ghost btn-icon", title: "Više", "aria-haspopup": "menu", onclick: (e: Event) => { e.stopPropagation(); moreMenu.hidden = !moreMenu.hidden; } }, icon("more"));
-document.addEventListener("click", () => (moreMenu.hidden = true));
+const moreBtn = h("button", { class: "btn btn-ghost btn-icon", title: "More", "aria-haspopup": "menu", onclick: (e: Event) => { e.stopPropagation(); moreMenu.hidden = !moreMenu.hidden; } }, icon("more"));
+document.addEventListener("click", () => { moreMenu.hidden = true; claudeMenu.hidden = true; closePicker(); });
 
 const header = h("header", { class: "top" },
   h("div", { class: "where" }, repoName, h("span", { class: "branch" }, icon("branch"), branchName)),
   status,
   h("div", { class: "actions" },
     stopBtn,
-    h("button", { class: "btn btn-ghost", title: "Počni novu konverzaciju s Kimijem (bilješke i sesije ostaju)", onclick: () => { if (!busy) post({ type: "newConversation" }); } }, icon("plus"), h("span", { class: "btn-label" }, "Nova")),
-    noteBtn("RULES", "Pravila", "rules", "Tvoja pravila za Kimija"),
-    noteBtn("PRIVATE", "Privatno", "lock", "Ono što zna samo Kimi"),
+    h("button", { class: "btn btn-ghost", title: "Start a new conversation (notes and sessions are kept)", onclick: () => { if (!busy) post({ type: "newConversation" }); } }, icon("plus"), h("span", { class: "btn-label" }, "New chat")),
+    noteBtn("RULES", "Rules", "rules", "Your rules: how the lead works and what Claude may know"),
+    noteBtn("PRIVATE", "Private notes", "lock", "Only the lead model knows this; Claude never sees it"),
     h("div", { class: "menu-wrap" }, moreBtn, moreMenu),
   ),
 );
 
 // view switch for narrow widths
-const segKimi = h("button", { class: "seg-btn", onclick: () => setView("kimi") }, "Kimi");
+const segKimiLabel = h("span", null, LN);
+const segKimi = h("button", { class: "seg-btn", onclick: () => setView("kimi") }, segKimiLabel);
 const segClaudeDot = h("span", { class: "live-dot", hidden: true });
 const segClaude = h("button", { class: "seg-btn", onclick: () => setView("claude") }, "Claude", segClaudeDot);
 const seg = h("div", { class: "seg", role: "tablist" }, segKimi, segClaude);
 
-// Kimi pane
-const kimiFeed = h("div", { class: "feed kimi-feed", role: "log", "aria-label": "Razgovor s Kimijem" });
-const input = h("textarea", { class: "input", rows: 1, placeholder: "Reci Kimiju šta treba uraditi…", "aria-label": "Poruka Kimiju" }) as HTMLTextAreaElement;
-const sendBtn = h("button", { class: "send", title: "Pošalji (Enter)", "aria-label": "Pošalji", onclick: () => submit() }, icon("send"));
+// lead pane
+const kimiFeed = h("div", { class: "feed kimi-feed", role: "log", "aria-label": "Conversation" });
+const input = h("textarea", { class: "input", rows: 1, placeholder: "Tell the lead what to do…", "aria-label": "Message" }) as HTMLTextAreaElement;
+const sendBtn = h("button", { class: "send", title: "Send (Enter)", "aria-label": "Send", onclick: () => submit() }, icon("send"));
 const ctxBar = h("span", { class: "meter-fill" });
 const ctxText = h("span", { class: "meta-item" });
 const costText = h("span", { class: "meta-item" });
-const modelText = h("span", { class: "meta-item model" });
+const modelLabel = h("span", { class: "model-name" });
+const modelBtn = h("button", { class: "model-btn", title: "Choose the lead model", "aria-haspopup": "listbox", "aria-expanded": "false", onclick: (e: Event) => { e.stopPropagation(); togglePicker(); } },
+  h("span", { class: "model-dot" }), modelLabel, icon("caret", "model-caret"));
+const pickSearch = h("input", { class: "pick-search", placeholder: "Search models: kimi, qwen, glm, deepseek, gemini…", "aria-label": "Search models", spellcheck: "false", autocomplete: "off" }) as HTMLInputElement;
+const pickList = h("div", { class: "pick-list", role: "listbox", "aria-label": "Lead models" });
+const picker = h("div", { class: "picker", hidden: true, onclick: (e: Event) => e.stopPropagation() },
+  h("div", { class: "pick-top" }, icon("search", "pick-ico"), pickSearch),
+  pickList,
+  h("div", { class: "pick-note" }, "The lead model talks with you and writes the briefs. Code is always written by the real Claude Code, on your subscription."));
 const composer = h("div", { class: "composer-wrap" },
+  picker,
   h("div", { class: "composer" }, input, sendBtn),
-  h("div", { class: "meta" }, modelText, h("span", { class: "meter", title: "Koliko je Kimijev kontekst pun" }, h("span", { class: "meter-track" }, ctxBar), ctxText), costText),
+  h("div", { class: "meta" }, modelBtn, h("span", { class: "meter", title: "How full the lead model's context is" }, h("span", { class: "meter-track" }, ctxBar), ctxText), costText),
 );
-const kimiPane = h("section", { class: "pane pane-kimi", "aria-label": "Kimi" }, kimiFeed, composer);
+const kimiPane = h("section", { class: "pane pane-kimi", "aria-label": "Lead" }, kimiFeed, composer);
 
 // Claude pane
-const tabs = h("div", { class: "tabs", role: "tablist", "aria-label": "Claude sesije" });
-const resumeBtn = h("button", { class: "btn btn-ghost", title: "Otvori ovu sesiju u terminalu (claude --resume) i nastavi ručno", onclick: () => activeSession && post({ type: "resume", session: activeSession }) }, icon("resume"), h("span", { class: "btn-label" }, "Nastavi u terminalu"));
+const tabs = h("div", { class: "tabs", role: "tablist", "aria-label": "Claude sessions" });
+const resumeBtn = h("button", { class: "btn btn-ghost", title: "Open this session in a terminal (claude --resume) and continue by hand", onclick: () => activeSession && post({ type: "resume", session: activeSession }) }, icon("resume"), h("span", { class: "btn-label" }, "Resume in terminal"));
+const CLAUDE_MODELS: [string | null, string, string][] = [
+  [null, "Your default", "the model from your Claude Code settings"],
+  ["opus", "Opus", "strongest, for serious work"],
+  ["sonnet", "Sonnet", "faster and cheaper"],
+  ["haiku", "Haiku", "fastest, for small things"],
+];
+const claudeModelLabel = h("span", { class: "cm-name" });
+const claudeMenu = h("div", { class: "menu menu-claude", role: "menu", hidden: true });
+const claudeModelBtn = h("button", { class: "cm-btn", title: "The model Claude Code uses (your subscription)", "aria-haspopup": "menu", onclick: (e: Event) => { e.stopPropagation(); renderClaudeMenu(); claudeMenu.hidden = !claudeMenu.hidden; closePicker(); moreMenu.hidden = true; } },
+  h("span", { class: "cm-dot" }), claudeModelLabel, icon("caret", "model-caret"));
+function renderClaudeMenu() {
+  const cur = info?.claudeModel ?? null;
+  claudeMenu.replaceChildren(...CLAUDE_MODELS.map(([id, label, hint]) =>
+    h("button", { class: `menu-item cm-item${id === cur ? " on" : ""}`, role: "menuitemradio", "aria-checked": String(id === cur), onclick: () => { claudeMenu.hidden = true; if (id !== cur) post({ type: "setClaudeModel", model: id }); } },
+      h("span", { class: "cm-item-top" }, h("span", null, label), id === cur ? icon("check", "cm-check") : null),
+      h("span", { class: "cm-hint" }, hint))));
+}
 const claudeBody = h("div", { class: "claude-body" });
 const claudeEmpty = h("div", { class: "empty empty-claude" },
   h("div", { class: "empty-mark" }, h("span", { class: "mark-k" }), h("span", { class: "mark-c" })),
-  h("p", { class: "empty-lead" }, "Ovdje gledaš Claude Code uživo."),
-  h("p", { class: "empty-sub" }, "Kad mu Kimi preda zadatak, vidiš tačan brief koji je dobio, svaki fajl koji čita, svaku komandu i svaku izmjenu."),
+  h("p", { class: "empty-lead" }, "Watch Claude Code work here, live."),
+  h("p", { class: "empty-sub" }, "The real Claude Code, on your subscription. When it gets a task, you see the exact brief, every file it reads, every command and every edit."),
 );
 claudeBody.append(claudeEmpty);
-const interjectInput = h("textarea", { class: "input", rows: 1, placeholder: "Upadni: poruka ide direktno Claudeu, Kimi je ne vidi", "aria-label": "Poruka direktno Claudeu" }) as HTMLTextAreaElement;
-const interjectBtn = h("button", { class: "send send-claude", title: "Pošalji Claudeu (Enter)", "aria-label": "Pošalji Claudeu", onclick: () => submitInterject() }, icon("send"));
+const interjectInput = h("textarea", { class: "input", rows: 1, placeholder: "Interject: this goes straight to Claude, the lead doesn't see it", "aria-label": "Message straight to Claude" }) as HTMLTextAreaElement;
+const interjectBtn = h("button", { class: "send send-claude", title: "Send to Claude (Enter)", "aria-label": "Send to Claude", onclick: () => submitInterject() }, icon("send"));
 const interject = h("div", { class: "interject", hidden: true }, h("div", { class: "composer composer-claude" }, interjectInput, interjectBtn));
 const claudePane = h("section", { class: "pane pane-claude", "aria-label": "Claude Code" },
-  h("div", { class: "tabbar" }, tabs, resumeBtn), claudeBody, interject);
+  h("div", { class: "tabbar" }, tabs, h("div", { class: "menu-wrap" }, claudeModelBtn, claudeMenu), resumeBtn), claudeBody, interject);
 
-const splitter = h("div", { class: "splitter", role: "separator", "aria-orientation": "vertical", tabindex: 0, title: "Povuci za promjenu širine" });
+const splitter = h("div", { class: "splitter", role: "separator", "aria-orientation": "vertical", tabindex: 0, title: "Drag to resize" });
 const split = h("main", { class: "split" }, kimiPane, splitter, claudePane);
 const toast = h("div", { class: "toast", role: "status", hidden: true });
 const app = h("div", { class: "app" }, header, seg, split, toast);
@@ -202,7 +232,7 @@ function submitInterject() {
   if (!text || !liveRun) return;
   post({ type: "interject", text });
   interjectInput.value = ""; autosize(interjectInput);
-  showToast("Poslano Claudeu");
+  showToast("Sent to Claude");
 }
 
 let toastTimer = 0;
@@ -225,13 +255,14 @@ function refreshChrome() {
   stopBtn.hidden = !busy;
   input.disabled = busy || !info?.hasKey;
   sendBtn.disabled = busy || !info?.hasKey;
-  input.placeholder = !info?.hasKey ? "Prvo poveži Kimija (OpenRouter ključ)" : busy ? "Kimi radi. Esc zaustavlja." : "Reci Kimiju šta treba uraditi…";
+  input.placeholder = !info?.hasKey ? "Save your OpenRouter key first" : busy ? `${LN} is working. Esc stops it.` : "What should we do? Write it in your own words…";
+  modelBtn.disabled = busy;
   const claudeLive = !!liveRun && !liveRun.done;
   interject.hidden = !(claudeLive && liveRun!.session === activeSession);
   segClaudeDot.hidden = !claudeLive;
   resumeBtn.hidden = !activeSession;
-  costText.textContent = totals.kimi || totals.claude ? `Kimi ${usd(totals.kimi)}  Claude ${usd(totals.claude)}` : "";
-  if (!busy && !waitingAnswer) setStatus("idle", "Spreman");
+  costText.textContent = totals.kimi || totals.claude ? `${LN} ${usd(totals.kimi)}  Claude ${usd(totals.claude)}` : "";
+  if (!busy && !waitingAnswer) setStatus("idle", "Ready");
 }
 
 function setContext(prompt: number, cached: number) {
@@ -240,33 +271,33 @@ function setContext(prompt: number, cached: number) {
   ctxBar.style.width = `${pct}%`;
   ctxBar.parentElement!.parentElement!.dataset.level = pct > 80 ? "high" : pct > 55 ? "mid" : "low";
   ctxText.textContent = `${ktok(prompt)} / ${ktok(info.contextLimit)}`;
-  ctxText.title = cached ? `Iz keša: ${Math.round((cached / prompt) * 100)} %` : "";
+  ctxText.title = cached ? `From cache: ${Math.round((cached / prompt) * 100)}%` : "";
 }
 
-// ───────────── Kimi feed ─────────────
+// ───────────── lead feed ─────────────
 
 function kimiEmpty(): HTMLElement {
   if (!info?.hasKey) {
-    const keyInput = h("input", { class: "key-input", type: "password", placeholder: "sk-or-…", "aria-label": "OpenRouter API ključ", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const keyInput = h("input", { class: "key-input", type: "password", placeholder: "sk-or-…", "aria-label": "OpenRouter API key", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
     const save = () => { const k = keyInput.value.trim(); if (k) post({ type: "saveKey", key: k }); };
     keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
     return h("div", { class: "empty empty-kimi onboarding" },
       h("div", { class: "empty-mark" }, h("span", { class: "mark-k" }), h("span", { class: "mark-c" })),
-      h("p", { class: "empty-lead" }, "Poveži Kimija"),
-      h("p", { class: "empty-sub" }, "Kimi radi preko OpenRoutera. Zalijepi API ključ. Čuva se u sigurnom spremištu VS Codea, ne u projektu."),
-      h("div", { class: "key-row" }, keyInput, h("button", { class: "btn btn-primary", onclick: save }, icon("key"), "Sačuvaj ključ")),
-      h("a", { class: "subtle-link", href: "https://openrouter.ai/keys", onclick: (e: Event) => { e.preventDefault(); post({ type: "openExternal", url: "https://openrouter.ai/keys" }); } }, "Napravi ključ na openrouter.ai/keys"),
+      h("p", { class: "empty-lead" }, "Connect OpenRouter"),
+      h("p", { class: "empty-sub" }, `${LN} (the lead model) runs through OpenRouter. Paste an API key; it is kept in VS Code's secret storage, not in the project. Claude Code runs on your subscription and needs no key.`),
+      h("div", { class: "key-row" }, keyInput, h("button", { class: "btn btn-primary", onclick: save }, icon("key"), "Save key")),
+      h("a", { class: "subtle-link", href: "https://openrouter.ai/keys", onclick: (e: Event) => { e.preventDefault(); post({ type: "openExternal", url: "https://openrouter.ai/keys" }); } }, "Create a key at openrouter.ai/keys"),
     );
   }
   const ideas = [
-    "Objasni mi kako je ovaj projekat organizovan i gdje je glavna logika.",
-    "Nađi zašto … ne radi i popravi to.",
-    "Dodaj testove za … i pokreni ih.",
+    "Explain how this project is organized and where the main logic lives.",
+    "Find out why … doesn't work and fix it.",
+    "Add tests for … and run them.",
   ];
   return h("div", { class: "empty empty-kimi" },
     h("div", { class: "empty-mark" }, h("span", { class: "mark-k" }), h("span", { class: "mark-c" })),
-    h("p", { class: "empty-lead" }, `Šta radimo u ${info.repoName}?`),
-    h("p", { class: "empty-sub" }, "Piši kako ti je prirodno. Kimi to pretvara u precizan zadatak za Claudea, a sve što mu preda vidiš desno."),
+    h("p", { class: "empty-lead" }, `What are we working on in ${info.repoName}?`),
+    h("p", { class: "empty-sub" }, `Write in your own words. ${LN} turns it into a precise task for Claude Code, and you see everything it hands over on the right.`),
     h("div", { class: "ideas" }, ...ideas.map((t) => h("button", { class: "idea", onclick: () => { input.value = t; autosize(input); input.focus(); const i = t.indexOf("…"); if (i >= 0) input.setSelectionRange(i, i + 1); } }, t))),
   );
 }
@@ -289,7 +320,7 @@ function addUser(text: string, ts: number) {
 function startThinking() {
   if (thinking || replaying) return;
   const ticker = h("span", { class: "ticker" });
-  const el = h("div", { class: "thinking" }, h("span", { class: "thinking-label" }, "Kimi razmišlja"), ticker);
+  const el = h("div", { class: "thinking" }, h("span", { class: "thinking-label" }, `${LN} is thinking`), ticker);
   thinking = { el, ticker, text: "" };
   feedAppend(el);
 }
@@ -307,7 +338,7 @@ function kimiText(delta: string) {
   if (!kimiMsg) {
     const body = h("div", { class: "md" });
     kimiMsg = { body, text: "", queued: false };
-    feedAppend(h("div", { class: "msg msg-kimi" }, h("div", { class: "who who-kimi" }, "Kimi"), body));
+    feedAppend(h("div", { class: "msg msg-kimi" }, h("div", { class: "who who-kimi" }, LN), body));
   }
   kimiMsg.text += delta;
   if (replaying) renderKimiMsg();
@@ -329,15 +360,15 @@ function alertCard(kind: "warn" | "danger" | "info", title: string, body: HTMLEl
 const asks = new Map<string, HTMLElement>();
 function askCard(id: string, question: string) {
   waitingAnswer = true;
-  setStatus("ask", "Čeka tvoj odgovor");
-  const free = h("input", { class: "ask-input", placeholder: "Ili napiši svoj odgovor i pritisni Enter", "aria-label": "Tvoj odgovor" }) as HTMLInputElement;
+  setStatus("ask", "Waiting for your answer");
+  const free = h("input", { class: "ask-input", placeholder: "Or type your own answer and press Enter", "aria-label": "Your answer" }) as HTMLInputElement;
   const send = (text: string) => { if (text.trim()) post({ type: "answer", id, text: text.trim() }); };
   free.addEventListener("keydown", (e) => { if (e.key === "Enter") send(free.value); });
   const actions = h("div", { class: "ask-actions" },
-    h("button", { class: "btn btn-primary", onclick: () => send("Da, odobreno.") }, icon("check"), "Odobri"),
-    h("button", { class: "btn", onclick: () => send("Ne, nemoj to raditi.") }, icon("x"), "Odbij"),
+    h("button", { class: "btn btn-primary", onclick: () => send("Yes, approved.") }, icon("check"), "Approve"),
+    h("button", { class: "btn", onclick: () => send("No, don't do that.") }, icon("x"), "Decline"),
     free);
-  const card = h("div", { class: "ask" }, h("div", { class: "ask-head" }, icon("info"), "Kimi te pita"), h("div", { class: "md" }, renderMarkdown(question, md)), actions);
+  const card = h("div", { class: "ask" }, h("div", { class: "ask-head" }, icon("info"), `${LN} asks`), h("div", { class: "md" }, renderMarkdown(question, md)), actions);
   asks.set(id, card);
   feedAppend(card);
   if (!replaying) free.focus();
@@ -347,7 +378,7 @@ function askAnswered(id: string, text: string | null) {
   const card = asks.get(id);
   if (!card) return;
   card.classList.add("answered");
-  card.querySelector(".ask-actions")?.replaceWith(h("div", { class: "ask-answer" }, text === null ? "Bez odgovora" : `Tvoj odgovor: ${text}`));
+  card.querySelector(".ask-actions")?.replaceWith(h("div", { class: "ask-answer" }, text === null ? "No answer" : `Your answer: ${text}`));
 }
 
 // ───────────── Claude pane ─────────────
@@ -357,7 +388,7 @@ function ensureSession(name: string): SessionView {
   if (s) return s;
   claudeEmpty.remove();
   const tab = h("button", { class: "tab", role: "tab", onclick: () => selectSession(name) }, h("span", { class: "live-dot", hidden: true }), h("span", { class: "tab-name" }, name)) as HTMLButtonElement;
-  const feed = h("div", { class: "feed claude-feed", role: "log", "aria-label": `Claude sesija ${name}`, hidden: true });
+  const feed = h("div", { class: "feed claude-feed", role: "log", "aria-label": `Claude session ${name}`, hidden: true });
   s = { name, tab, feed, runs: [] };
   sessions.set(name, s);
   tabs.append(tab);
@@ -393,8 +424,8 @@ const TOOL_ICON: Record<string, string> = {
   TodoWrite: "list", Task: "agent", Agent: "agent", WebFetch: "globe", WebSearch: "globe",
 };
 const TOOL_VERB: Record<string, string> = {
-  Read: "Čita", Edit: "Mijenja", MultiEdit: "Mijenja", Write: "Piše", NotebookEdit: "Mijenja", Bash: "Pokreće", PowerShell: "Pokreće",
-  Grep: "Traži", Glob: "Traži fajlove", TodoWrite: "Plan", Task: "Pomoćnik", Agent: "Pomoćnik", WebFetch: "Otvara", WebSearch: "Pretražuje",
+  Read: "Reads", Edit: "Edits", MultiEdit: "Edits", Write: "Writes", NotebookEdit: "Edits", Bash: "Runs", PowerShell: "Runs",
+  Grep: "Searches", Glob: "Finds files", TodoWrite: "Plan", Task: "Subagent", Agent: "Subagent", WebFetch: "Fetches", WebSearch: "Searches the web",
 };
 
 function diffBlock(before: string, after: string, max = 80): { el: HTMLElement; add: number; del: number } {
@@ -412,7 +443,7 @@ function diffBlock(before: string, after: string, max = 80): { el: HTMLElement; 
     if (shown++ >= max) return;
     pre.append(h("div", { class: `dl ${l.t === "+" ? "dl-add" : l.t === "-" ? "dl-del" : ""}` }, h("span", { class: "dl-sign" }, l.t === " " ? "" : l.t), h("span", { class: "dl-text" }, l.s || " ")));
   });
-  if (shown > max) pre.append(h("div", { class: "dl dl-gap" }, `još ${shown - max} linija u pravom diffu`));
+  if (shown > max) pre.append(h("div", { class: "dl dl-gap" }, `${shown - max} more lines in the full diff`));
   return { el: pre, add, del };
 }
 
@@ -423,9 +454,9 @@ function toolRow(run: RunView, id: string, name: string, input: any) {
   let detail: HTMLElement = h("div", { class: "tdetail", hidden: true });
   let open = false;
   const file = relPath(input?.file_path ?? input?.notebook_path);
-  const fileLink = (f: string, line?: number) => h("button", { class: "tpath", title: "Otvori fajl", onclick: (e: Event) => { e.stopPropagation(); post({ type: "openFile", path: f, line }); } }, f);
+  const fileLink = (f: string, line?: number) => h("button", { class: "tpath", title: "Open file", onclick: (e: Event) => { e.stopPropagation(); post({ type: "openFile", path: f, line }); } }, f);
   switch (name) {
-    case "Read": label = fileLink(file, input.offset); if (input.offset) stats = h("span", { class: "tmeta" }, `od linije ${input.offset}`); break;
+    case "Read": label = fileLink(file, input.offset); if (input.offset) stats = h("span", { class: "tmeta" }, `from line ${input.offset}`); break;
     case "Edit": case "Write": case "MultiEdit": {
       label = fileLink(file);
       const edits: { old_string?: string; new_string?: string }[] =
@@ -437,18 +468,18 @@ function toolRow(run: RunView, id: string, name: string, input: any) {
         add += d.add; del += d.del;
         detail.append(d.el);
       }
-      detail.append(h("button", { class: "btn btn-ghost btn-small", onclick: () => post({ type: "openDiff", path: file }) }, icon("diff"), "Otvori diff u editoru"));
+      detail.append(h("button", { class: "btn btn-ghost btn-small", onclick: () => post({ type: "openDiff", path: file }) }, icon("diff"), "Open diff"));
       stats = h("span", { class: "tstats" }, h("span", { class: "add" }, `+${add}`), h("span", { class: "del" }, `−${del}`));
       // show small edits inline right away; big ones and whole new files stay one click away
       open = name === "Write" ? add <= 8 : add + del <= 24;
       break;
     }
     case "Bash": case "PowerShell": label = h("code", { class: "tcmd" }, String(input.command ?? "").split("\n")[0]); break;
-    case "Grep": label = h("code", { class: "tcmd" }, String(input.pattern ?? "")); if (input.path && relPath(input.path) !== ".") stats = h("span", { class: "tmeta" }, `u ${relPath(input.path)}`); break;
+    case "Grep": label = h("code", { class: "tcmd" }, String(input.pattern ?? "")); if (input.path && relPath(input.path) !== ".") stats = h("span", { class: "tmeta" }, `in ${relPath(input.path)}`); break;
     case "Glob": label = h("code", { class: "tcmd" }, String(input.pattern ?? "")); break;
     case "TodoWrite": {
       const todos: { content?: string; status?: string }[] = input.todos ?? [];
-      label = `${todos.length} koraka`;
+      label = `${todos.length} steps`;
       detail.append(h("ul", { class: "todos" }, ...todos.map((t) => h("li", { class: `todo todo-${t.status ?? "pending"}` }, t.content ?? ""))));
       open = true;
       break;
@@ -482,8 +513,8 @@ function toolResult(run: RunView, id: string, isError: boolean, text: string) {
   t.status.className = `tstatus ${isError ? "err" : "ok"}`;
   if (isError) {
     t.row.classList.add("failed", "expandable");
-    t.detail.prepend(h("pre", { class: "tresult err" }, text.slice(0, 1200) || "Greška"));
-    if (/denied|permission/i.test(text)) t.row.querySelector(".tverb")!.append(h("span", { class: "tmeta" }, " blokirano"));
+    t.detail.prepend(h("pre", { class: "tresult err" }, text.slice(0, 1200) || "Error"));
+    if (/denied|permission/i.test(text)) t.row.querySelector(".tverb")!.append(h("span", { class: "tmeta" }, " blocked"));
   } else if (["Bash", "PowerShell", "Grep", "Glob"].includes(t.name) && text.trim()) {
     t.row.classList.add("expandable");
     t.detail.append(h("pre", { class: "tresult" }, text.slice(0, 1200)));
@@ -495,22 +526,22 @@ function startRun(session: string, mode: "ask" | "implement", prompt: string, ts
   const id = `run-${ts}-${Math.random().toString(36).slice(2, 7)}`;
   const timer = h("span", { class: "run-timer", dataset: { start: String(ts) } }, replaying ? "" : "0 s");
   const promptPre = h("pre", { class: "brief-text" }, prompt.trim());
-  const more = h("button", { class: "brief-more", hidden: true, onclick: () => { brief.classList.toggle("expanded"); more.textContent = brief.classList.contains("expanded") ? "Skupi" : "Prikaži cijeli brief"; } }, "Prikaži cijeli brief");
-  const brief = h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: "who who-kimi" }, "Kimi"), h("span", { class: "brief-to" }, "predaje Claudeu")), promptPre, more);
+  const more = h("button", { class: "brief-more", hidden: true, onclick: () => { brief.classList.toggle("expanded"); more.textContent = brief.classList.contains("expanded") ? "Collapse" : "Show full brief"; } }, "Show full brief");
+  const brief = h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: "who who-kimi" }, LN), h("span", { class: "brief-to" }, "hands off to Claude")), promptPre, more);
   const stream = h("div", { class: "stream" });
   const foot = h("div", { class: "run-foot" });
   const el = h("article", { class: `run run-${mode}`, id },
     h("div", { class: "run-head" },
-      h("span", { class: `mode mode-${mode}` }, mode === "ask" ? "Savjetovanje, samo čita" : "Implementacija"),
+      h("span", { class: `mode mode-${mode}` }, mode === "ask" ? "Consult, read-only" : "Implementation"),
       h("span", { class: "run-time" }, clock(ts)),
       timer),
     brief, stream, foot);
   // handoff card in Kimi's feed: the bridge between the two panes
-  const hstatus = h("span", { class: "handoff-status running" }, replaying ? "" : "radi");
+  const hstatus = h("span", { class: "handoff-status running" }, replaying ? "" : "running");
   const handoff = h("button", { class: `handoff handoff-${mode}`, onclick: () => focusRun(run) },
     h("span", { class: "handoff-rail" }),
     h("span", { class: "handoff-main" },
-      h("span", { class: "handoff-top" }, icon("handoff"), h("span", { class: "handoff-title" }, mode === "ask" ? `Pita Claudea za savjet` : `Daje Claudeu da implementira`), h("span", { class: "session-tag" }, session)),
+      h("span", { class: "handoff-top" }, icon("handoff"), h("span", { class: "handoff-title" }, mode === "ask" ? `Asks Claude for advice` : `Hands the implementation to Claude`), h("span", { class: "session-tag" }, session)),
       h("span", { class: "handoff-preview" }, prompt.trim().split("\n").slice(0, 3).join("\n"))),
     hstatus);
   const run: RunView = { id, session, mode, start: ts, el, stream, foot, timer, tools: new Map(), handoff, done: false };
@@ -523,7 +554,7 @@ function startRun(session: string, mode: "ask" | "implement", prompt: string, ts
   if (!replaying) {
     selectSession(session);
     handoff.classList.add("sent");
-    setStatus("claude", `Claude radi u sesiji ${session}`);
+    setStatus("claude", `Claude is working in session ${session}`);
   }
   refreshChrome();
 }
@@ -544,26 +575,26 @@ function endRun(run: RunView, isError: boolean, stopped: boolean, cost: number, 
   run.el.classList.add(stopped ? "stopped" : isError ? "errored" : "finished");
   const st = run.handoff.querySelector(".handoff-status")!;
   st.className = `handoff-status ${stopped ? "stopped" : isError ? "err" : "ok"}`;
-  st.replaceChildren(icon(stopped ? "stop" : isError ? "x" : "check"), stopped ? "zaustavljeno" : isError ? "greška" : took);
+  st.replaceChildren(icon(stopped ? "stop" : isError ? "x" : "check"), stopped ? "stopped" : isError ? "error" : took);
   run.foot.prepend(h("div", { class: "run-end" },
-    h("span", { class: `end-state ${stopped ? "stopped" : isError ? "err" : "ok"}` }, icon(stopped ? "stop" : isError ? "x" : "check"), stopped ? "Zaustavljeno" : isError ? "Završeno s greškom" : "Gotovo"),
+    h("span", { class: `end-state ${stopped ? "stopped" : isError ? "err" : "ok"}` }, icon(stopped ? "stop" : isError ? "x" : "check"), stopped ? "Stopped" : isError ? "Finished with an error" : "Done"),
     h("span", { class: "end-meta" }, took), cost ? h("span", { class: "end-meta" }, usd(cost)) : null));
   if (isError && !stopped && text) run.foot.append(h("pre", { class: "tresult err" }, text.slice(0, 800)));
   for (const t of run.tools.values()) if (t.status.classList.contains("running")) t.status.className = `tstatus ${stopped ? "stopped" : "ok"}`;
   const s = sessions.get(run.session)!;
   s.tab.querySelector(".live-dot")!.setAttribute("hidden", "");
   if (liveRun === run) liveRun = null;
-  if (busy && !replaying) setStatus("kimi", "Kimi pregleda Claudeov rad");
+  if (busy && !replaying) setStatus("kimi", `${LN} is reviewing Claude's work`);
   refreshChrome();
 }
 
 function runFiles(run: RunView, files: { file: string; code: string }[]) {
-  const label = (code: string) => (code.includes("D") ? "obrisan" : code.includes("?") || code.includes("A") ? "nov" : code.trim() ? "izmijenjen" : "vraćen");
+  const key = (code: string) => (code.includes("D") ? "deleted" : code.includes("?") || code.includes("A") ? "new" : code.trim() ? "modified" : "reverted");
   run.foot.append(h("div", { class: "files" },
-    h("div", { class: "files-title" }, `Promijenjeni fajlovi (${files.length})`),
+    h("div", { class: "files-title" }, `Changed files (${files.length})`),
     ...files.map((f) => h("div", { class: "file-row" },
       h("button", { class: "tpath", onclick: () => post({ type: "openFile", path: f.file }) }, f.file),
-      h("span", { class: `fstate fstate-${label(f.code)}` }, label(f.code)),
+      h("span", { class: `fstate fstate-${key(f.code)}` }, key(f.code)),
       h("button", { class: "btn btn-ghost btn-small", onclick: () => post({ type: "openDiff", path: f.file }) }, icon("diff"), "Diff")))));
 }
 
@@ -574,11 +605,11 @@ function handle(e: UIEvent) {
     case "user":
       addUser(e.text, e.ts);
       kimiMsg = null;
-      if (!replaying) { busy = true; setStatus("kimi", "Kimi razmišlja"); refreshChrome(); }
+      if (!replaying) { busy = true; setStatus("kimi", `${LN} is thinking`); refreshChrome(); }
       break;
     case "kimi-start":
       kimiMsg = null;
-      if (!replaying) { startThinking(); if (!liveRun) setStatus("kimi", "Kimi razmišlja"); }
+      if (!replaying) { startThinking(); if (!liveRun) setStatus("kimi", `${LN} is thinking`); }
       break;
     case "kimi-reasoning":
       if (thinking) {
@@ -597,7 +628,7 @@ function handle(e: UIEvent) {
       break;
     case "kimi-tool":
       kimiTool(e.label, e.name);
-      if (!replaying) setStatus("kimi", "Kimi čita kod");
+      if (!replaying) setStatus("kimi", `${LN} is reading code`);
       break;
     case "claude-start":
       stopThinking();
@@ -615,7 +646,7 @@ function handle(e: UIEvent) {
       } else if (ev.kind === "tool_result") {
         toolResult(run, ev.id, ev.isError, ev.text);
       } else if (ev.kind === "user") {
-        stick(s.feed, () => run.stream.append(h("div", { class: "interjection" }, h("span", { class: "who who-you" }, "Ti"), h("span", null, ev.text))));
+        stick(s.feed, () => run.stream.append(h("div", { class: "interjection" }, h("span", { class: "who who-you" }, "You"), h("span", null, ev.text))));
       } else if (ev.kind === "init" && ev.model) {
         run.el.querySelector(".run-head")!.append(h("span", { class: "run-model" }, ev.model));
       }
@@ -632,10 +663,10 @@ function handle(e: UIEvent) {
       break;
     }
     case "guard":
-      alertCard("warn", "Ovo traži tvoje odobrenje", h("ul", { class: "alert-list" }, ...e.issues.map((i) => h("li", null, i))));
+      alertCard("warn", "This needs your approval", h("ul", { class: "alert-list" }, ...e.issues.map((i) => h("li", null, i))));
       break;
     case "blocked":
-      alertCard("danger", "Blokirano prije slanja Claudeu", e.reason);
+      alertCard("danger", "Blocked before reaching Claude", e.reason);
       break;
     case "notice":
       feedAppend(h("div", { class: "notice" }, icon("info"), h("span", null, e.text)));
@@ -649,19 +680,19 @@ function handle(e: UIEvent) {
       break;
     case "error":
       stopThinking();
-      alertCard("danger", "Nešto je puklo", e.text);
+      alertCard("danger", "Something went wrong", e.text);
       break;
     case "task-end": {
       stopThinking();
       if (!e.streamed) {
         const body = h("div", { class: "md" }, renderMarkdown(e.report, md));
-        feedAppend(h("div", { class: `msg msg-kimi${e.report === "Zaustavljeno." ? " msg-stopped" : ""}` }, h("div", { class: "who who-kimi" }, "Kimi"), body));
+        feedAppend(h("div", { class: `msg msg-kimi${e.report === "Stopped." ? " msg-stopped" : ""}` }, h("div", { class: "who who-kimi" }, LN), body));
       }
       totals.kimi += e.kimiUsd; totals.claude += e.claudeUsd;
       const took = lastUserTs ? fmtDuration(e.ts - lastUserTs) : "";
       feedAppend(h("div", { class: "task-foot" },
         took ? h("span", null, took) : null,
-        e.kimiUsd ? h("span", null, `Kimi ${usd(e.kimiUsd)}`) : null,
+        e.kimiUsd ? h("span", null, `${LN} ${usd(e.kimiUsd)}`) : null,
         e.claudeUsd ? h("span", null, `Claude ${usd(e.claudeUsd)}`) : null));
       kimiMsg = null;
       waitingAnswer = false;
@@ -683,6 +714,127 @@ setInterval(() => {
   }
 }, 1000);
 
+// ───────────── model choice ─────────────
+
+/** Strong tool-calling leads, shown first when they exist in OpenRouter's catalogue. */
+const RECOMMENDED = [
+  "moonshotai/kimi-k3.1-pro", "qwen/qwen3.8-max-0902", "z-ai/glm-5.3", "deepseek/deepseek-v4-pro-0813",
+  "openai/gpt-5.6-luna-pro", "google/gemini-3.8-flash", "minimax/minimax-m3.1-flash",
+];
+let models: ModelInfo[] | null = null;
+let modelsError = "";
+let pickActive = 0;
+
+const shortModel = (id: string) => id.replace(/^.*\//, "");
+const claudeLabel = (m: string | null) => CLAUDE_MODELS.find(([id]) => id === m)?.[1] ?? m ?? "Your default";
+const price = (n: number) => (n === 0 ? "0" : n < 1 ? n.toFixed(2) : Number.isInteger(n) ? String(n) : n.toFixed(1));
+const ctxSize = (n: number) => (n >= 1_000_000 ? `${Math.round((n / 1_048_576) * 10) / 10 || 1}M` : `${Math.round(n / 1000)}k`);
+
+function applyConfig(model: string, claudeModel: string | null) {
+  if (info) { info.model = model; info.claudeModel = claudeModel; }
+  LN = leadName(model);
+  modelLabel.textContent = shortModel(model);
+  modelBtn.title = `Lead model: ${model}. Click to change.`;
+  claudeModelLabel.textContent = `Claude: ${claudeModel ? claudeLabel(claudeModel) : "your default"}`;
+  segKimiLabel.textContent = LN;
+  kimiPane.setAttribute("aria-label", LN);
+  if (kimiFeed.querySelector(".empty")) resetKimiFeed();
+  refreshChrome();
+}
+
+function togglePicker() {
+  if (!picker.hidden) { closePicker(); return; }
+  if (busy) return;
+  claudeMenu.hidden = true; moreMenu.hidden = true;
+  picker.hidden = false;
+  modelBtn.setAttribute("aria-expanded", "true");
+  pickSearch.value = "";
+  pickActive = 0;
+  if (!models) post({ type: "listModels" });
+  renderPicker();
+  pickSearch.focus();
+}
+function closePicker() {
+  if (picker.hidden) return;
+  picker.hidden = true;
+  modelBtn.setAttribute("aria-expanded", "false");
+}
+
+function pickRows(): { title: string; items: (ModelInfo | string)[] }[] {
+  if (!models) return [];
+  const q = pickSearch.value.trim().toLowerCase();
+  if (q) {
+    const terms = q.split(/\s+/);
+    const hits = models.filter((m) => terms.every((t) => m.id.toLowerCase().includes(t) || m.name.toLowerCase().includes(t))).slice(0, 80);
+    const custom = q.includes("/") && !models.some((m) => m.id === q) ? [q] : [];
+    return [{ title: hits.length ? `Results (${hits.length})` : "No matching model with tool support", items: [...hits, ...custom] }];
+  }
+  const byId = new Map(models.map((m) => [m.id, m]));
+  const rec = RECOMMENDED.map((id) => byId.get(id)).filter((m): m is ModelInfo => !!m);
+  const cur = info && !RECOMMENDED.includes(info.model) ? byId.get(info.model) : undefined;
+  const top = cur ? [cur, ...rec] : rec;
+  // free variants often log prompts; keep them out of the default list (still reachable by search)
+  const rest = models.filter((m) => !top.includes(m) && !m.id.endsWith(":free")).slice(0, 60);
+  return [{ title: "Recommended", items: top }, { title: "Newest on OpenRouter", items: rest }];
+}
+
+function renderPicker() {
+  if (!models) {
+    pickList.replaceChildren(h("div", { class: "pick-empty" }, modelsError || "Loading models from OpenRouter…"));
+    return;
+  }
+  const groups = pickRows();
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  pickActive = Math.max(0, Math.min(pickActive, total - 1));
+  let k = 0;
+  const cur = info?.model;
+  pickList.replaceChildren(...groups.flatMap((g) => [
+    h("div", { class: "pick-group" }, g.title),
+    ...g.items.map((m) => {
+      const i = k++;
+      const custom = typeof m === "string";
+      const id = custom ? m : m.id;
+      return h("button", {
+        class: `pick-row${i === pickActive ? " active" : ""}${id === cur ? " on" : ""}`, role: "option", "aria-selected": String(id === cur),
+        dataset: { i: String(i) }, onclick: () => choose(id), onmousemove: () => setActive(i),
+      },
+        h("span", { class: "pick-main" },
+          h("span", { class: "pick-name" }, custom ? `Use "${m}"` : m.name),
+          h("span", { class: "pick-id" }, custom ? "Not in the catalogue; the model must support tools" : m.id)),
+        custom ? null : h("span", { class: "pick-facts" },
+          h("span", { class: "pick-price", title: "USD per million tokens: input / output" }, `${price(m.prompt)} / ${price(m.completion)}`),
+          h("span", { class: "pick-ctx", title: "Context size" }, ctxSize(m.context))),
+        id === cur ? icon("check", "pick-check") : h("span", { class: "pick-check" }));
+    }),
+  ]));
+  pickList.querySelector(".pick-row.active")?.scrollIntoView({ block: "nearest" });
+}
+function setActive(i: number) {
+  if (i === pickActive) return;
+  pickActive = i;
+  for (const r of pickList.querySelectorAll<HTMLElement>(".pick-row")) r.classList.toggle("active", r.dataset.i === String(i));
+}
+function choose(id: string) {
+  closePicker();
+  if (id !== info?.model) post({ type: "setModel", id });
+  input.focus();
+}
+pickSearch.addEventListener("input", () => { pickActive = 0; renderPicker(); });
+pickSearch.addEventListener("keydown", (e) => {
+  const rows = [...pickList.querySelectorAll<HTMLElement>(".pick-row")];
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    setActive(Math.max(0, Math.min(rows.length - 1, pickActive + (e.key === "ArrowDown" ? 1 : -1))));
+    pickList.querySelector(".pick-row.active")?.scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    rows.find((r) => r.dataset.i === String(pickActive))?.click();
+  } else if (e.key === "Escape") {
+    e.preventDefault(); e.stopPropagation();
+    closePicker(); modelBtn.focus();
+  }
+});
+
 // ───────────── messages from the extension ─────────────
 
 function markInterrupted() {
@@ -696,26 +848,25 @@ function applyInit(d: InitData) {
   activeSession = null; liveRun = null; totals.kimi = 0; totals.claude = 0;
   repoName.textContent = d.repoName;
   repoName.title = d.repo;
-  branchName.textContent = d.branch || "bez grane";
-  modelText.textContent = d.model.replace(/^.*\//, "");
-  modelText.title = d.model;
+  branchName.textContent = d.branch || "no branch";
+  applyConfig(d.model, d.claudeModel);
   resetKimiFeed();
   replaying = true;
   for (const e of d.transcript) handle(e);
   replaying = false;
   if (!d.busy) { markInterrupted(); waitingAnswer = false; }
-  for (const a of asks.values()) if (!a.classList.contains("answered") && !d.busy) a.querySelector(".ask-actions")?.replaceWith(h("div", { class: "ask-answer" }, "Pitanje je isteklo"));
+  for (const a of asks.values()) if (!a.classList.contains("answered") && !d.busy) a.querySelector(".ask-actions")?.replaceWith(h("div", { class: "ask-answer" }, "Question expired"));
   busy = d.busy;
   if (busy) {
     const live = liveRun as RunView | null; // set by handle() during replay
-    if (live) setStatus("claude", `Claude radi u sesiji ${live.session}`);
-    else if (waitingAnswer) setStatus("ask", "Čeka tvoj odgovor");
-    else setStatus("kimi", "Kimi razmišlja");
+    if (live) setStatus("claude", `Claude is working in session ${live.session}`);
+    else if (waitingAnswer) setStatus("ask", "Waiting for your answer");
+    else setStatus("kimi", `${LN} is thinking`);
   }
   if (!d.claudeFound) {
     claudeBody.prepend(h("div", { class: "alert alert-danger" }, icon("warn"), h("div", { class: "alert-body" },
-      h("div", { class: "alert-title" }, "Claude Code nije pronađen"),
-      h("div", null, `Tražio sam: ${d.claudeBin}. Instaliraj Claude Code ili upiši putanju u "claude.path" u .kimi/config.json.`))));
+      h("div", { class: "alert-title" }, "Claude Code not found"),
+      h("div", null, `Looked for: ${d.claudeBin}. Install Claude Code or set "claude.path" in .kimi/config.json.`))));
   }
   kimiFeed.scrollTop = kimiFeed.scrollHeight;
   for (const s of sessions.values()) s.feed.scrollTop = s.feed.scrollHeight;
@@ -732,7 +883,7 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       const hadKey = info?.hasKey;
       busy = m.busy;
       if (info) { info.hasKey = m.hasKey; info.branch = m.branch; }
-      branchName.textContent = m.branch || "bez grane";
+      branchName.textContent = m.branch || "no branch";
       if (!hadKey && m.hasKey && kimiFeed.querySelector(".empty")) { resetKimiFeed(); input.focus(); }
       if (!busy) { stopThinking(); waitingAnswer = false; }
       refreshChrome();
@@ -742,6 +893,14 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       if (info) applyInit({ ...info, transcript: [], busy: false });
       break;
     case "toast": showToast(m.text); break;
+    case "models":
+      models = m.models; modelsError = m.error ?? "";
+      if (!picker.hidden) renderPicker();
+      break;
+    case "config":
+      applyConfig(m.model, m.claudeModel);
+      showToast(`Lead: ${shortModel(m.model)} · Claude Code: ${claudeLabel(m.claudeModel)}`);
+      break;
   }
 });
 

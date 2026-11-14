@@ -17,16 +17,16 @@ export function describeTool(repo: string, name: string, input: any): string {
   switch (name) {
     case "Read": return `${relPath(repo, i.file_path)}${i.offset ? ` :${i.offset}` : ""}`;
     case "Edit": return `${relPath(repo, i.file_path)}  +${lineCount(i.new_string)} −${lineCount(i.old_string)}`;
-    case "MultiEdit": return `${relPath(repo, i.file_path)}  (${(i.edits ?? []).length} izmjena)`;
-    case "Write": return `${relPath(repo, i.file_path)}  (${lineCount(i.content)} linija)`;
+    case "MultiEdit": return `${relPath(repo, i.file_path)}  (${(i.edits ?? []).length} edits)`;
+    case "Write": return `${relPath(repo, i.file_path)}  (${lineCount(i.content)} lines)`;
     case "NotebookEdit": return relPath(repo, i.notebook_path);
     case "Bash": return String(i.command ?? "").split("\n")[0].slice(0, 160);
     case "Grep": {
       const where = relPath(repo, i.path);
-      return `"${i.pattern ?? ""}"${where && where !== "." ? ` u ${where}` : ""}${i.glob ? ` (${i.glob})` : ""}`;
+      return `"${i.pattern ?? ""}"${where && where !== "." ? ` in ${where}` : ""}${i.glob ? ` (${i.glob})` : ""}`;
     }
     case "Glob": return String(i.pattern ?? "");
-    case "TodoWrite": return `plan: ${(i.todos ?? []).length} stavki`;
+    case "TodoWrite": return `plan: ${(i.todos ?? []).length} items`;
     case "Task": case "Agent": return String(i.description ?? "");
     case "WebFetch": return String(i.url ?? "");
     case "WebSearch": return String(i.query ?? "");

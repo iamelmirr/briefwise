@@ -1,3 +1,3 @@
-# Projekat
+# Project
 
-(Kimi popunjava: šta je projekat, arhitektura, konvencije. Možeš i ti dopisati.)
+(The lead fills this in: what the project is, architecture, conventions. You can add to it too.)

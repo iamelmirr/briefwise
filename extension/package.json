@@ -1,32 +1,61 @@
 {
   "name": "kimi-lead",
   "displayName": "Kimi Lead",
-  "description": "Kimi kao tech lead, Claude Code kao inženjer. Pričaš s Kimijem, Claudea gledaš uživo.",
-  "version": "0.2.0",
+  "description": "Talk to a lead model (any OpenRouter model, Kimi by default); it briefs the real Claude Code, and you watch Claude work live.",
+  "version": "0.3.0",
   "publisher": "iamelmirr",
   "private": true,
-  "license": "UNLICENSED",
-  "engines": { "vscode": "^1.95.0" },
-  "categories": ["Other"],
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "main": "./dist/extension.js",
   "activationEvents": [],
   "contributes": {
     "commands": [
-      { "command": "kimiLead.open", "title": "Otvori Kimija", "category": "Kimi Lead", "icon": "$(comment-discussion)" },
-      { "command": "kimiLead.setApiKey", "title": "Postavi OpenRouter ključ", "category": "Kimi Lead" },
-      { "command": "kimiLead.clearApiKey", "title": "Obriši OpenRouter ključ", "category": "Kimi Lead" },
-      { "command": "kimiLead.stop", "title": "Zaustavi zadatak", "category": "Kimi Lead" },
-      { "command": "kimiLead.newConversation", "title": "Nova konverzacija", "category": "Kimi Lead" }
+      {
+        "command": "kimiLead.open",
+        "title": "Open",
+        "category": "Kimi Lead",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "kimiLead.setApiKey",
+        "title": "Set OpenRouter key",
+        "category": "Kimi Lead"
+      },
+      {
+        "command": "kimiLead.clearApiKey",
+        "title": "Clear OpenRouter key",
+        "category": "Kimi Lead"
+      },
+      {
+        "command": "kimiLead.stop",
+        "title": "Stop task",
+        "category": "Kimi Lead"
+      },
+      {
+        "command": "kimiLead.newConversation",
+        "title": "New conversation",
+        "category": "Kimi Lead"
+      }
     ],
     "keybindings": [
-      { "command": "kimiLead.open", "key": "ctrl+alt+k", "mac": "cmd+alt+k" }
+      {
+        "command": "kimiLead.open",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
+      }
     ]
   },
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc -p .",
-    "package": "node build.mjs && vsce package --no-dependencies --allow-missing-repository --skip-license -o kimi-lead.vsix"
+    "package": "node build.mjs && vsce package --no-dependencies -o kimi-lead.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -34,5 +63,13 @@
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iamelmirr/kimi-lead.git"
+  },
+  "homepage": "https://github.com/iamelmirr/kimi-lead#readme",
+  "bugs": {
+    "url": "https://github.com/iamelmirr/kimi-lead/issues"
   }
 }

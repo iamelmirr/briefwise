@@ -1,122 +1,141 @@
 # kimi-lead
 
-Kimi K3.1 Pro (preko OpenRoutera) je **tech lead**, a Claude Code je **inženjer**.
-Ti pričaš s Kimijem. Kimi tvoj jezik pretvara u precizne tehničke zadatke za Claudea, bira pristup, pušta implementaciju, pregleda diff i javlja ti rezultat.
-Kimi ne piše kod i sam odlučuje šta Claude vidi, u okviru tvojih pravila. Claudeov rad gledaš uživo.
+You talk to a **lead model**. It turns what you say into precise engineering briefs for **the real Claude Code**, reviews what Claude did, and reports back. You watch Claude work live, step by step.
 
-## Instalacija
+![kimi-lead in VS Code: the lead conversation on the left, the live Claude Code session on the right](docs/screenshot.png)
 
-Potrebno: Node 22.6+, `git`, instaliran i prijavljen `claude` (Claude Code).
+- **The engineer is the real Claude Code.** kimi-lead runs your installed, unmodified `claude` CLI, on your own Claude subscription. It never touches your Claude credentials.
+- **The lead is any OpenRouter model.** It defaults to Kimi K3.1 Pro. Switch to Qwen, GLM, DeepSeek, GPT, Gemini or anything else with tool calling from a picker. Only the lead uses your OpenRouter key.
+- **The lead stays fast.** It gets Claude's short report, not Claude's whole transcript. It prunes old reads and summarizes itself when its context fills up.
+- **The lead knows things Claude doesn't.** Private notes (clients, business context, why something matters) stay with the lead and never go into a brief.
+- **Some guardrails live in code, not just in prompts.** These are forbidden patterns, files nobody may read, read-only consultations, and a post-change guard for dependencies, schema, deletions and CI.
+
+## How a task flows
+
+1. You write casually, in any language: *"cart should reject negative prices, add a test"*.
+2. The lead reads a little code if it needs to (small, bounded reads) and decides what to do.
+3. Optionally it **consults** Claude in read-only mode for options.
+4. It sends Claude an **implement** brief, in English, scoped and testable.
+5. Claude edits files and runs the checks you allowed. You see every read, command and diff.
+6. The lead reviews the diff, asks Claude for fixes if needed, updates its notes, and replies to you in your language with the cost.
+
+While Claude works you can **interject**: type straight into Claude's session. **Stop** (or Esc / Ctrl+C) kills both the lead request and the Claude process.
+
+## Requirements
+
+- Node 22.6+ and `git`
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and logged in (`claude` works in your terminal)
+- An [OpenRouter API key](https://openrouter.ai/keys) for the lead model
+
+## VS Code extension
 
 ```bash
-cd kimi-lead
-npm link                      # dobiješ komandu `kimi-lead` svugdje
-export OPENROUTER_API_KEY=sk-or-...      # Windows: setx OPENROUTER_API_KEY sk-or-...
-```
-
-Nema runtime zavisnosti (`npm install` treba samo za `npm run typecheck`).
-`claude` se traži redom: `claude.path` u configu, `CLAUDE_BIN`, `PATH`, pa `~/.local/bin` (gdje ga stavlja native installer, i na Windowsu).
-
-## VS Code ekstenzija
-
-Panel u VS Codeu: lijevo pričaš s Kimijem, desno gledaš Claude Code uživo (brief koji je dobio od Kimija, svaki fajl, komandu, diff), s tabom po sesiji.
-
-```bash
+git clone https://github.com/iamelmirr/kimi-lead.git
 cd kimi-lead/extension
 npm install
-npm run package                               # napravi kimi-lead.vsix
+npm run package                     # builds kimi-lead.vsix
 code --install-extension kimi-lead.vsix
 ```
 
-Otvori folder projekta i pritisni `Ctrl+Alt+K` (ili komanda **Kimi Lead: Otvori Kimija**). OpenRouter ključ zalijepiš u panel; čuva se u VS Code SecretStorage, ne u projektu.
+Open a project folder and press `Ctrl+Alt+K` (or run **Kimi Lead: Open**). Paste your OpenRouter key once. It is kept in VS Code's secret storage, not in the project.
 
-- Dok Claude radi, ispod njegove sesije možeš mu pisati direktno (upadanje). `Esc` ili **Zaustavi** prekida sve.
-- Klik na Kimijevu karticu predaje skače na taj Claudeov rad; klik na fajl ga otvara; **Diff** otvara pravi diff prema zadnjem commitu.
-- **Nastavi u terminalu** otvara tu Claude sesiju interaktivno (`claude --resume`).
-- Razgovor ostaje i nakon zatvaranja panela (`.kimi/transcript.json`); **Nova** počinje iznova, bilješke i sesije ostaju.
+- **Left:** your conversation with the lead. Each handoff to Claude is a card showing the brief and its status. Click a card to jump to that run.
+- **Right:** Claude Code, one tab per session. You get the exact brief, a live tool stream with inline diffs, the files changed with **Open diff** against the last commit, and **Resume in terminal**, which opens the session with `claude --resume`.
+- **Model chip** under the composer: pick the lead model from OpenRouter's catalogue, with prices and context size. **Claude menu** in the right pane: your default model, Opus, Sonnet or Haiku.
+- **Rules** and **Private notes** open the lead's files. The conversation survives reloads. **New chat** starts over and keeps the notes and sessions.
 
-Za razvoj UI-ja bez VS Codea: `npm run build`, pa otvori `extension/dev/preview.html?state=live` (stanja: `live`, `done`, `guard`, `nokey`, `empty`; `&theme=light`).
-
-## Korištenje u terminalu
+## Terminal
 
 ```bash
-cd ~/posao/neki-projekat
-kimi-lead                     # interaktivno
-kimi-lead "dodaj rate limiting na /api/orders"   # jedan zadatak pa izlaz
+cd kimi-lead && npm link            # gives you a global `kimi-lead`
+export OPENROUTER_API_KEY=sk-or-... # Windows: setx OPENROUTER_API_KEY sk-or-...
+
+cd ~/work/some-project
+kimi-lead                           # interactive
+kimi-lead "add rate limiting to /api/orders"   # one task, then exit
 ```
 
-- Kimijev odgovor se ispisuje uživo, a svaki poziv Claudea je okvir u kojem vidiš **šta mu je Kimi poslao** i svaki Claudeov korak (Read, Edit +/−, Bash…).
-- Dok Claude radi, **otkucana poruka ide direktno njemu** (upadanje). Kimi to ne vidi, ali vidi Claudeov izvještaj.
-- **Ctrl+C** zaustavlja zadatak (i Kimija i Claudea). Drugi Ctrl+C kad ništa ne radi = izlaz.
-- Komande: `/new`, `/sessions`, `/rules`, `/private`, `/exit`.
+Commands: `/new`, `/model [id]`, `/claude [opus|sonnet|haiku|default]`, `/sessions`, `/rules`, `/private`, `/exit`. Typing while Claude runs goes straight to Claude. Ctrl+C stops the task.
 
-Prvo pokretanje napravi `.kimi/` u projektu i doda ga u `.git/info/exclude`, tako da ne ide u git:
+`claude` is found in this order: `claude.path` in the config, `CLAUDE_BIN`, `PATH`, then `~/.local/bin` (where the native installer puts it, Windows included).
 
-| Fajl | Ko piše | Šta je |
+## The `.kimi/` folder
+
+The first run creates `.kimi/` in your project and adds it to `.git/info/exclude`, so it never gets committed.
+
+| File | Written by | What it is |
 |---|---|---|
-| `RULES.md` | **samo ti** | Kako Kimi smije pričati s Claudeom, šta Claude smije znati, tvoj stil rada. Najviši prioritet. |
-| `PRIVATE.md` | ti i Kimi | Ono što **samo Kimi** zna: klijenti, poslovni kontekst, zašto se nešto radi. Nikad ne ide Claudeu. |
-| `config.json` | ti | Model, limiti i tvrde zaštite (vidi dolje). |
-| `PROJECT.md`, `TASKS.md`, `DECISIONS.md` | Kimi (i ti) | Kimijeva dugoročna memorija o projektu. |
-| `sessions.json` | alat | Claude Code sesije po temama (`auth`, `billing`…). Nastaviš ručno s `claude --resume <id>`. |
-| `history.json` | alat | Kratka historija: tvoje poruke i Kimijevi izvještaji (`/new` je briše). |
-| `log.md` | alat | Sve: tvoje poruke, svaki prompt Claudeu i odgovor, upozorenja. Claude ga nikad ne vidi. |
+| `RULES.md` | **you only** | How the lead should work, what Claude may know, your style. Highest priority. |
+| `PRIVATE.md` | you and the lead | What **only the lead** knows. Never sent to Claude. |
+| `config.json` | you | Models, limits and hard guardrails (below). |
+| `PROJECT.md`, `TASKS.md`, `DECISIONS.md` | the lead (and you) | The lead's long-term memory of the project. |
+| `sessions.json` | tool | Named Claude Code sessions (`auth`, `billing`…). |
+| `history.json` | tool | Short history: your messages and the lead's reports. |
+| `transcript.json` | extension | What the panel shows after a reload. |
+| `log.md` | tool | Everything: your messages, every brief and reply, warnings. Claude never sees it. |
 
-## Kako Kimi radi
+## Guardrails in code
 
-1. Shvati cilj; po potrebi čita kod, ali u malim komadima (`read_file` najviše ~200 linija, `grep` ograničen broj pogodaka).
-2. `ask_claude`: Claude u **read-only** modu istražuje i predlaže opcije (najviše `maxAskRounds` po zadatku).
-3. Kimi bira pristup po tvojim pravilima (tu jače razmišlja: `decisionEffort`).
-4. `implement`: Claude mijenja fajlove i pokreće samo dozvoljene komande (`implementAllow`).
-5. Kimi pregleda diff, po potrebi vraća na doradu, ažurira bilješke i javi ti kratak izvještaj s troškom.
-
-### Zašto Kimi ostaje brz
-
-- Kimi od Claudea dobija samo kratak izvještaj; cijeli Claudeov rad vidiš ti, ne Kimi.
-- Stara čitanja koda se automatski zamijene kratkom oznakom (`softTokens`).
-- Kad se kontekst ipak napuni (`hardTokens`), Kimi sažme dosadašnji rad na zadatku i nastavi sa svježim kontekstom.
-- Između zadataka se ne čuva sirovi razgovor, samo tvoje poruke, Kimijevi izvještaji i bilješke.
-- System prompt je isti kroz cijeli zadatak (keširanje kod providera), OpenRouter bira najbržeg providera (`provider.sort`), a Kimi po defaultu malo razmišlja (`reasoningEffort: "low"`).
-
-## Zaštite koje su u kodu, a ne samo u promptu
-
-- **`forbidden`**: lista regexa (npr. `"ACME"`, `"Klijent\\s+X"`). Prompt Claudeu koji ih sadrži se blokira i Kimi mora preformulisati.
-- **`denyRead`**: fajlovi koje ni Claude ni Kimi ne smiju čitati (`.env`, ključevi, `secrets/**`…). `.kimi/` je uvijek zabranjen Claudeu.
-- **Read-only konsultacije**: u `ask_claude` Claude nema Edit/Write ni Bash osim `git status/diff/log/show` i `ls`.
-- **Guard nakon implementacije**: ako Claude dirne zavisnosti, šemu baze ili migracije, obriše fajl ili dira deploy/CI, Kimi dobije upozorenje i mora te pitati ili tražiti da Claude to vrati. Hvata i ponovnu izmjenu fajla koji je već bio izmijenjen.
-- Claude nikad ne smije `git push`, `git reset`, `git checkout`, `git clean` ni `rm`.
-- **Tvoja globalna Claude podešavanja se ne učitavaju** (`claude.userSettings: false`). Inače bi npr. `"allow": ["Bash"]` iz `~/.claude/settings.json` zaobišao sve gore. Projektna `.claude/settings.json` i `CLAUDE.md` važe normalno.
+- **`forbidden`**: a list of regexes (e.g. `"ACME"`, `"Client\\s+X"`). A brief that matches is blocked and the lead must rephrase.
+- **`denyRead`**: files neither Claude nor the lead may read (`.env`, keys, `secrets/**`…). `.kimi/` is always off limits to Claude.
+- **Read-only consults**: in `ask_claude`, Claude has no Edit/Write and no Bash beyond `git status/diff/log/show` and `ls`.
+- **Post-change guard**: if Claude touched dependencies, database schema or migrations, deleted a file, or changed deploy/CI config, the lead is warned and must ask you or have Claude revert. Re-edits of already-dirty files are caught too.
+- Claude may never `git push`, `git reset`, `git checkout`, `git clean` or `rm`.
+- **Your global Claude settings are not loaded** (`claude.userSettings: false`). Otherwise something like `"allow": ["Bash"]` in `~/.claude/settings.json` would bypass all of the above. Project `.claude/settings.json` and `CLAUDE.md` apply as usual.
 
 ## config.json
 
-```json
+```jsonc
 {
-  "model": "moonshotai/kimi-k3.1-pro",
-  "provider": { "sort": "throughput" },
-  "reasoningEffort": "low",
-  "decisionEffort": "medium",
+  "model": "moonshotai/kimi-k3.1-pro",   // any OpenRouter model with tool calling
+  "provider": { "sort": "throughput" },  // OpenRouter routes to the fastest provider
+  "reasoningEffort": "low",              // how hard the lead thinks by default
+  "decisionEffort": "medium",            // ...and right after consulting Claude
   "maxAskRounds": 3,
   "maxSteps": 60,
   "context": { "softTokens": 24000, "hardTokens": 40000, "keepTaskPairs": 8 },
   "read": { "maxLines": 200, "maxChars": 12000, "grepMax": 40 },
   "claude": {
     "path": null,                  // null = auto-detect
-    "userSettings": false,         // true = učitaj i ~/.claude/settings.json (zaobilazi zaštite!)
-    "model": null,                 // npr. "opus"; null = tvoj default
+    "userSettings": false,         // true = also load ~/.claude/settings.json (bypasses guardrails)
+    "model": null,                 // e.g. "opus"; null = your Claude Code default
     "effort": null,
     "maxBudgetUsdPerCall": null,
     "reportMaxChars": 6000,
-    "implementAllow": ["Bash(npm test:*)", "Bash(npm run lint:*)"],
+    "implementAllow": ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
     "denyRead": [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"]
   },
   "forbidden": []
 }
 ```
 
-Za Go projekat, recimo: `"implementAllow": ["Bash(go test:*)", "Bash(go vet:*)"]`.
+For a Go project you might use `"implementAllow": ["Bash(go test:*)", "Bash(go vet:*)"]`.
 
-## Prije korištenja na poslu
+## Why the lead stays fast
 
-- Kimi preko OpenRoutera vidi kod koji pročita. **Pitaj firmu** da li to smiješ, i po potrebi ograniči providera u OpenRouter postavkama.
-- `claude -p` prijavljen tvojim Claude planom troši limite tvoje pretplate (stanje oktobar 2026). Kimi može pozvati Claudea više puta po zadatku.
-- Radi na zasebnoj git grani. Kimi ne commita; commit i push su tvoji.
+- It sees Claude's compact report. The full transcript is for you.
+- Old code reads are replaced with a short marker once the context passes `softTokens`.
+- At `hardTokens` it writes itself a checkpoint summary and continues with a fresh context.
+- Between tasks only your messages, its reports and its notes are kept, never the raw conversation.
+- The system prompt is frozen for the whole task, so provider prompt caching works.
+
+## Before you use it at work
+
+- The lead model sees whatever code it reads, through OpenRouter. Check that your employer allows that, and restrict providers in your OpenRouter settings if needed.
+- Claude Code runs as `claude -p` under your own plan and uses your subscription limits. The lead may call Claude several times per task.
+- Work on a separate branch. kimi-lead never commits. Committing and pushing is up to you.
+
+## Development
+
+```bash
+npm install && npm run typecheck                  # core (Node runs the TypeScript directly)
+cd extension && npm install && npm run build      # extension bundles into extension/dist
+```
+
+UI work without VS Code: after `npm run build`, open `extension/dev/preview.html?state=live` in a browser. The states are `live`, `done`, `guard`, `nokey` and `empty`. Add `&theme=light`, `&picker=1` or `&claudemenu=1` as needed.
+
+`extension/dev/host-test.cjs` runs the bundled extension in plain Node against a fake `vscode` API and a test repo. Point `OPENROUTER_BASE_URL` at a mock server to keep it offline.
+
+## License
+
+[MIT](LICENSE)

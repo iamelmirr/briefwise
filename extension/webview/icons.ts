@@ -23,6 +23,7 @@ const P: Record<string, string> = {
   info: `<circle cx="8" cy="8" r="6.25"/><path d="M8 7.25v4"/><circle cx="8" cy="5" r=".6" fill="currentColor"/>`,
   shield: `<path d="M8 1.75l5.25 2v4c0 3.4-2.3 5.6-5.25 6.5-2.95-.9-5.25-3.1-5.25-6.5v-4z"/>`,
   chevron: `<path d="M6 4l4 4-4 4"/>`,
+  caret: `<path d="M4.5 6.5l3.5 3.5 3.5-3.5"/>`,
   branch: `<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="5" r="1.5"/><path d="M4.5 5v6M11.5 6.5c0 3-7 2-7 4.5"/>`,
   resume: `<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5"/><path d="M6.25 5.75l3.5 2.25-3.5 2.25z"/>`,
   handoff: `<path d="M2 8h10.5M9 4.5L12.5 8 9 11.5"/>`,

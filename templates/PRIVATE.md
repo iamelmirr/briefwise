@@ -1,5 +1,5 @@
-# Privatno (samo Kimi)
+# Private (lead only)
 
-Ovo vidi samo Kimi. Nikad ne ide Claudeu.
-Upiši ovdje (ili reci Kimiju da zapamti): klijente, poslovni kontekst, ljude, rokove, cijene, zašto se nešto radi.
+Only the lead sees this. It is never shared with Claude.
+Write here (or tell the lead to remember): clients, business context, people, deadlines, prices, why something is being done.
 

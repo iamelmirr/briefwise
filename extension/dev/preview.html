@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- Dev preview of the webview outside VS Code: fake VS Code API + demo transcript.
      Open dev/preview.html?theme=light|dark&state=live|empty|nokey|done after `npm run build`. -->
-<html lang="bs">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -42,9 +42,14 @@
     getState: () => ({}), setState: () => {},
     postMessage: (m) => {
       console.log("→ extension", m);
+      if (m.type === "listModels") setTimeout(() => window.postMessage({ type: "models", models: window.demoModels }, "*"), 150);
+      if (m.type === "setModel") window.postMessage({ type: "config", model: m.id, claudeModel: null }, "*");
+      if (m.type === "setClaudeModel") window.postMessage({ type: "config", model: "moonshotai/kimi-k3.1-pro", claudeModel: m.model }, "*");
       if (m.type === "ready") {
         window.postMessage({ type: "init", data: window.demoInit(state) }, "*");
         if (q.get("top")) setTimeout(() => document.querySelectorAll(".claude-feed").forEach((f) => (f.scrollTop = 0)), 300);
+        if (q.get("picker")) setTimeout(() => document.querySelector(".model-btn").click(), 200);
+        if (q.get("claudemenu")) setTimeout(() => document.querySelector(".cm-btn").click(), 200);
       }
     },
   });

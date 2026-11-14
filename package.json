@@ -1,10 +1,29 @@
 {
   "name": "kimi-lead",
-  "version": "0.2.0",
-  "description": "Kimi (OpenRouter) as tech lead, Claude Code as the coding worker",
+  "version": "0.3.0",
+  "description": "A lead model (any OpenRouter model, Kimi by default) turns your requests into precise briefs for the real Claude Code, and you watch Claude work live.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iamelmirr/kimi-lead.git"
+  },
+  "homepage": "https://github.com/iamelmirr/kimi-lead#readme",
+  "keywords": [
+    "claude-code",
+    "openrouter",
+    "kimi",
+    "ai-agents",
+    "tech-lead",
+    "vscode",
+    "cli"
+  ],
   "type": "module",
-  "bin": { "kimi-lead": "bin/kimi-lead.mjs" },
-  "engines": { "node": ">=22.6" },
+  "bin": {
+    "kimi-lead": "bin/kimi-lead.mjs"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "start": "node bin/kimi-lead.mjs",
     "typecheck": "tsc -p ."

@@ -1,3 +1,3 @@
-# Odluke
+# Decisions
 
-(Kimi bilježi: odluka — zašto — datum.)
+(The lead records: decision — why — date.)

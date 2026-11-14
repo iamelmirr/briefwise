@@ -15,6 +15,18 @@ export type KimiResult = { msg: Msg; costUsd: number; promptTokens: number; cach
 
 const RETRY = [408, 429, 500, 502, 503, 504];
 
+/** Turn an OpenRouter error into something the user can act on. */
+function explain(status: number, body: string, model: string): string {
+  let detail = body.slice(0, 300);
+  try { detail = JSON.parse(body)?.error?.message ?? detail; } catch { /* raw text */ }
+  if (status === 401) return "The OpenRouter key is invalid or revoked (401). Enter a new key.";
+  if (status === 402) return "The OpenRouter account does not have enough credits (402). Top up at openrouter.ai/credits.";
+  if (status === 404 || (status === 400 && /model|tool/i.test(detail)))
+    return `Model ${model} is unavailable or does not support tools (${status}: ${detail}). Choose another model.`;
+  if (status === 429) return `OpenRouter is rate-limiting requests for ${model} (429). Wait a moment or choose another model.`;
+  return `OpenRouter ${status}: ${detail}`;
+}
+
 export async function kimiCall(o: {
   cfg: Config;
   apiKey?: string;
@@ -28,7 +40,7 @@ export async function kimiCall(o: {
   onReasoning?(delta: string): void;
 }): Promise<KimiResult> {
   const key = o.apiKey || process.env.OPENROUTER_API_KEY;
-  if (!key) throw new Error("Nema OpenRouter API ključa (OPENROUTER_API_KEY)");
+  if (!key) throw new Error("No OpenRouter API key (OPENROUTER_API_KEY)");
   const body = JSON.stringify({
     model: o.cfg.model,
     messages: [{ role: "system", content: o.system }, ...o.messages],
@@ -49,7 +61,7 @@ export async function kimiCall(o: {
       signal: o.signal,
     });
     if (res.ok && res.body) break;
-    if (attempt >= 4 || !RETRY.includes(res.status)) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    if (attempt >= 4 || !RETRY.includes(res.status)) throw new Error(explain(res.status, await res.text(), o.cfg.model));
     await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
 

@@ -106,14 +106,14 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
   assert.ok(fs.existsSync(path.join(repo, ".kimi", "PRIVATE.md")), "templates copied into .kimi");
   console.log("✓ init:", init.data.repoName, init.data.branch, init.data.model);
 
-  await send({ type: "send", text: "ovo ne smije proći bez ključa" });
+  await send({ type: "send", text: "this must not go through without a key" });
   assert.ok(posted.some((m) => m.type === "toast"), "toast when no key");
   await send({ type: "saveKey", key: "dummy-key" });
   assert.equal(secrets.get("kimiLead.openrouterKey"), "dummy-key");
   assert.equal(posted.filter((m) => m.type === "state").at(-1).hasKey, true);
   console.log("✓ key saved to secret storage");
 
-  const sendP = send({ type: "send", text: "dodaj provjeru da se ne dijeli s nulom" });
+  const sendP = send({ type: "send", text: "add a check so we never divide by zero" });
   await until(() => posted.some((m) => m.type === "state" && m.busy));
   console.log("✓ busy while running");
   // interject as soon as Claude implements
