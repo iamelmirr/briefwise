@@ -1,4 +1,4 @@
-// Streaming OpenRouter client for Kimi (OpenAI-compatible chat completions with tools).
+// Streaming OpenRouter client for the lead model (OpenAI-compatible chat completions with tools).
 
 import type { Config } from "./config.ts";
 
@@ -11,7 +11,7 @@ export type Msg = {
   reasoning?: string;
 };
 
-export type KimiResult = { msg: Msg; costUsd: number; promptTokens: number; cachedTokens: number };
+export type LeadResult = { msg: Msg; costUsd: number; promptTokens: number; cachedTokens: number };
 
 const RETRY = [408, 429, 500, 502, 503, 504];
 
@@ -27,7 +27,7 @@ function explain(status: number, body: string, model: string): string {
   return `OpenRouter ${status}: ${detail}`;
 }
 
-export async function kimiCall(o: {
+export async function leadCall(o: {
   cfg: Config;
   apiKey?: string;
   system: string;
@@ -38,7 +38,7 @@ export async function kimiCall(o: {
   toolChoice?: "auto" | "none";
   onText?(delta: string): void;
   onReasoning?(delta: string): void;
-}): Promise<KimiResult> {
+}): Promise<LeadResult> {
   const key = o.apiKey || process.env.OPENROUTER_API_KEY;
   if (!key) throw new Error("No OpenRouter API key (OPENROUTER_API_KEY)");
   const body = JSON.stringify({
@@ -56,7 +56,7 @@ export async function kimiCall(o: {
   for (let attempt = 1; ; attempt++) {
     res = await fetch(`${process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1"}/chat/completions`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Title": "kimi-lead" },
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Title": "Briefwise", "HTTP-Referer": "https://github.com/iamelmirr/briefwise" },
       body,
       signal: o.signal,
     });

@@ -1,4 +1,4 @@
-// kimi-lead core — Kimi (via OpenRouter) as tech lead, Claude Code as the coding worker.
+// Briefwise core — the lead model (via OpenRouter) as tech lead, Claude Code as the coding worker.
 // UI-agnostic: everything that happens is emitted as a LeadEvent (rendered by the CLI now, the VS Code panel later).
 
 import * as fs from "node:fs";
@@ -6,15 +6,15 @@ import * as path from "node:path";
 import { clip, init, isDenied, readJson, readText, writeJson, type Config, type Paths } from "./config.ts";
 import { changesSince, dirtyFiles, git, guardIssues, snapshot } from "./git.ts";
 import { buildArgs, describeAllowed, resolveClaudeBin, startClaude, withMode, type ClaudeEvent, type ClaudeResult, type ClaudeRun, type Mode } from "./claude.ts";
-import { kimiCall, type Msg } from "./kimi.ts";
+import { leadCall, type Msg } from "./openrouter.ts";
 import { leadName } from "./names.ts";
 
 export type LeadEvent =
-  | { type: "kimi-start" }
-  | { type: "kimi-reasoning"; delta: string }
-  | { type: "kimi-text"; delta: string }
-  | { type: "kimi-end"; promptTokens: number; cachedTokens: number }
-  | { type: "kimi-tool"; name: string; label: string }
+  | { type: "lead-start" }
+  | { type: "lead-reasoning"; delta: string }
+  | { type: "lead-text"; delta: string }
+  | { type: "lead-end"; promptTokens: number; cachedTokens: number }
+  | { type: "lead-tool"; name: string; label: string }
   | { type: "claude-start"; session: string; mode: Mode; prompt: string }
   | { type: "claude-event"; session: string; event: ClaudeEvent }
   | { type: "claude-end"; session: string; result: ClaudeResult }
@@ -22,7 +22,7 @@ export type LeadEvent =
   | { type: "guard"; issues: string[] }
   | { type: "blocked"; reason: string }
   | { type: "notice"; text: string }
-  | { type: "task-end"; report: string; streamed: boolean; kimiUsd: number; claudeUsd: number };
+  | { type: "task-end"; report: string; streamed: boolean; leadUsd: number; claudeUsd: number };
 
 export type LeadOptions = {
   templatesDir?: string;            // where RULES.md etc. templates live (default: ../templates next to src)
@@ -79,7 +79,7 @@ export class Lead {
   readonly P: Paths;
   readonly claudeBin: string;
   sessions: Record<string, Session>;
-  kimiUsd = 0;
+  leadUsd = 0;
   claudeUsd = 0;
 
   private hooks: LeadHooks;
@@ -104,7 +104,7 @@ export class Lead {
   get busy(): boolean { return this.running; }
   get claudeActive(): boolean { return !!this.active; }
 
-  /** Stop the current task: aborts Kimi's request and kills the running Claude process. */
+  /** Stop the current task: aborts the lead's request and kills the running Claude process. */
   stop(): void {
     this.stopped = true;
     this.abort?.abort();
@@ -120,7 +120,7 @@ export class Lead {
 
   newConversation(): void { writeJson(this.P.history, []); }
 
-  /** Change the lead model (any OpenRouter model with tool support); saved in .kimi/config.json. */
+  /** Change the lead model (any OpenRouter model with tool support); saved in .briefwise/config.json. */
   setModel(model: string): void {
     this.cfg.model = model;
     this.saveConfig((c) => { c.model = model; });
@@ -135,7 +135,7 @@ export class Lead {
   private saveConfig(change: (c: any) => void) {
     let c: any;
     try { c = JSON.parse(readText(this.P.config, "{}")); } catch {
-      throw new Error(".kimi/config.json is not valid JSON, so it was left unchanged. Fix it and try again.");
+      throw new Error(".briefwise/config.json is not valid JSON, so it was left unchanged. Fix it and try again.");
     }
     change(c);
     writeJson(this.P.config, c);
@@ -157,7 +157,7 @@ export class Lead {
     if (this.running) throw new Error(`${leadName(this.cfg.model)} is already working on a task`);
     this.running = true;
     this.stopped = false;
-    this.kimiUsd = 0;
+    this.leadUsd = 0;
     this.claudeUsd = 0;
     try {
       return await this.runTask(userMsg);
@@ -203,7 +203,7 @@ How you work:
 - Prompts to Claude: English, self-contained, technical: goal, relevant files/functions, constraints, what "done" means, which checks to run. Never forward the user's words verbatim. Never include anything from PRIVATE or anything the user's rules forbid.
 - Flow: if the approach is not obvious, ask_claude for 2-3 options → choose by the goal and the user's rules → implement → review (Claude's report + git diff) → send fixes if needed → finish.
 - Claude's replies to you are short reports. The user watches Claude's full session live, so do not repeat Claude's details back to them.
-- When implementing, Claude may run only these commands: ${this.allowedForPrompt()}. Name the right one for checks in your prompt. If Claude reports that a check could not run, have it use an allowed command; if none fits, tell the user which command to add to claude.implementAllow in .kimi/config.json.
+- When implementing, Claude may run only these commands: ${this.allowedForPrompt()}. Name the right one for checks in your prompt. If Claude reports that a check could not run, have it use an allowed command; if none fits, tell the user which command to add to claude.implementAllow in .briefwise/config.json.
 - Work autonomously until done. escalate_to_user only for: new/changed dependencies, database schema, deleting files, production/deployment, or a genuinely ambiguous goal. A GUARD warning means you must escalate or have Claude revert.
 - One Claude session per workstream (new_session); reuse a session to continue the same work, it remembers.
 - The raw conversation is not kept between tasks; your notes are your long-term memory. Before finishing, update TASKS/DECISIONS briefly if something changed, and PROJECT when you learn lasting facts. Keep notes compact.
@@ -236,20 +236,20 @@ ${sess}`;
   }
 
   /** silent: internal call (context checkpoint) — its text is not shown to the user. */
-  private async callKimi(system: string, msgs: Msg[], effort: string | null, toolChoice?: "none", silent = false) {
+  private async callLead(system: string, msgs: Msg[], effort: string | null, toolChoice?: "none", silent = false) {
     this.abort = new AbortController();
-    this.emit({ type: "kimi-start" });
-    const r = await kimiCall({
+    this.emit({ type: "lead-start" });
+    const r = await leadCall({
       cfg: this.cfg, apiKey: this.opts.apiKey?.(), system, messages: msgs, tools: TOOLS, effort, toolChoice, signal: this.abort.signal,
-      onText: (delta) => { if (!silent) this.emit({ type: "kimi-text", delta }); },
-      onReasoning: (delta) => this.emit({ type: "kimi-reasoning", delta }),
+      onText: (delta) => { if (!silent) this.emit({ type: "lead-text", delta }); },
+      onReasoning: (delta) => this.emit({ type: "lead-reasoning", delta }),
     });
-    this.kimiUsd += r.costUsd;
-    this.emit({ type: "kimi-end", promptTokens: r.promptTokens, cachedTokens: r.cachedTokens });
+    this.leadUsd += r.costUsd;
+    this.emit({ type: "lead-end", promptTokens: r.promptTokens, cachedTokens: r.cachedTokens });
     return r.msg;
   }
 
-  /** Keep Kimi's context small: prune old reads/reasoning, drop earlier turns, then summarize the task. */
+  /** Keep the lead's context small: prune old reads/reasoning, drop earlier turns, then summarize the task. */
   private async fitContext(system: string, t: Task): Promise<void> {
     const { softTokens, hardTokens } = this.cfg.context;
     if (estTokens(system, t.msgs) <= softTokens) return;
@@ -276,7 +276,7 @@ ${sess}`;
     }
 
     this.emit({ type: "notice", text: `Context is almost full; ${leadName(this.cfg.model)} is summarizing the work on this task so far…` });
-    const summary = await this.callKimi(system, [...t.msgs, { role: "user", content: CHECKPOINT }], "low", "none", true);
+    const summary = await this.callLead(system, [...t.msgs, { role: "user", content: CHECKPOINT }], "low", "none", true);
     this.log("Lead context checkpoint", summary.content);
     t.msgs = [{ role: "user", content: `${t.goal}\n\n[Context checkpoint. Your own summary of progress on this task so far:]\n${summary.content}` }];
     t.readLabels.clear();
@@ -299,7 +299,7 @@ ${sess}`;
     try {
       for (let step = 0; step < this.cfg.maxSteps && !t.done && !this.stopped; step++) {
         await this.fitContext(system, t);
-        const msg = await this.callKimi(system, t.msgs, afterAsk ? this.cfg.decisionEffort : this.cfg.reasoningEffort);
+        const msg = await this.callLead(system, t.msgs, afterAsk ? this.cfg.decisionEffort : this.cfg.reasoningEffort);
         t.msgs.push(msg);
         if (!msg.tool_calls?.length) {
           t.done = msg.content.trim() || `(${leadName(this.cfg.model)} did not reply)`;
@@ -325,10 +325,10 @@ ${sess}`;
 
     const report = this.stopped
       ? "Stopped."
-      : t.done ?? `Stopped after ${this.cfg.maxSteps} steps without finishing. See .kimi/log.md.`;
+      : t.done ?? `Stopped after ${this.cfg.maxSteps} steps without finishing. See .briefwise/log.md.`;
     this.log("Lead → user (report)", report);
     this.saveTurn(userMsg, report);
-    this.emit({ type: "task-end", report, streamed: t.streamed && !this.stopped, kimiUsd: this.kimiUsd, claudeUsd: this.claudeUsd });
+    this.emit({ type: "task-end", report, streamed: t.streamed && !this.stopped, leadUsd: this.leadUsd, claudeUsd: this.claudeUsd });
     return report;
   }
 
@@ -361,7 +361,7 @@ ${sess}`;
     const deny = this.cfg.claude.denyRead;
     switch (name) {
       case "list_files": {
-        this.emit({ type: "kimi-tool", name, label: `lists files${a.filter ? ` (${a.filter})` : ""}` });
+        this.emit({ type: "lead-tool", name, label: `lists files${a.filter ? ` (${a.filter})` : ""}` });
         const files = git(this.repo, ["ls-files"]).split("\n").filter((f) => f && (!a.filter || f.includes(a.filter)));
         const shown = files.slice(0, 300);
         return (shown.join("\n") || "(no files)") + (files.length > shown.length ? `\n…and ${files.length - shown.length} more; use a filter` : "");
@@ -375,13 +375,13 @@ ${sess}`;
         const lines = text.split("\n");
         const s = Math.max(1, a.start ?? 1);
         const e = Math.min(lines.length, a.end ?? s + maxLines - 1, s + maxLines - 1);
-        this.emit({ type: "kimi-tool", name, label: `reads ${rel} ${s}–${e}` });
+        this.emit({ type: "lead-tool", name, label: `reads ${rel} ${s}–${e}` });
         const body = lines.slice(s - 1, e).map((l, i) => `${s + i}\t${l.length > 500 ? l.slice(0, 500) + "…" : l}`).join("\n");
         const more = e < lines.length ? `\n[lines ${s}-${e} of ${lines.length}; ask for another range if needed]` : "";
         return clip(body, maxChars, "request a smaller range") + more;
       }
       case "grep": {
-        this.emit({ type: "kimi-tool", name, label: `searches "${a.pattern}"${a.path ? ` in ${a.path}` : ""}` });
+        this.emit({ type: "lead-tool", name, label: `searches "${a.pattern}"${a.path ? ` in ${a.path}` : ""}` });
         const out = git(this.repo, ["grep", "-n", "-I", "-E", "--max-count=10", String(a.pattern ?? ""), ...(a.path ? ["--", a.path] : [])]);
         if (out.startsWith("git error")) return out;
         const lines = out.split("\n").filter((l) => l && !isDenied(l.split(":")[0], deny));
@@ -392,21 +392,29 @@ ${sess}`;
         const args: string[] = Array.isArray(a.args) ? a.args.map(String) : [];
         if (!["status", "diff", "log", "show", "branch"].includes(args[0])) return "ERROR: only status/diff/log/show/branch allowed";
         if (args.some((x) => /^--?(output|exec|delete|force|D|d|m|M|c|C)$/.test(x) || x.startsWith("--output") || x.startsWith("--exec"))) return "ERROR: flag not allowed";
-        this.emit({ type: "kimi-tool", name, label: `git ${args.join(" ")}` });
-        return clip(git(this.repo, args) || "(empty)", maxChars, "use git diff --stat or git diff -- <file>");
+        // denyRead also applies through git: no `REV:path` or pathspec for a denied file,
+        // and repo-wide output gets exclude pathspecs so denied files never appear in it
+        const deny = this.cfg.claude.denyRead;
+        if (args.some((x) => { const m = /^[^-:][^:]*:(.+)$/.exec(x); return !!m && isDenied(m[1], deny); })) return "ERROR: that path is in denyRead";
+        const dd = args.indexOf("--");
+        if (dd >= 0 && args.slice(dd + 1).some((p) => isDenied(p, deny))) return "ERROR: that path is in denyRead";
+        const excludes = [".briefwise/**", ".kimi/**", ...deny].map((p) => `:(exclude,glob)${p.includes("/") ? p : `**/${p}`}`);
+        const full = args[0] === "branch" ? args : dd >= 0 ? [...args, ...excludes] : [...args, "--", ".", ...excludes];
+        this.emit({ type: "lead-tool", name, label: `git ${args.join(" ")}` });
+        return clip(git(this.repo, full) || "(empty)", maxChars, "use git diff --stat or git diff -- <file>");
       }
       case "update_notes": {
         const file = a.file as NoteFile;
         if (!NOTE_FILES.includes(file)) return "ERROR: unknown notes file";
         const dest = { PROJECT: this.P.project, TASKS: this.P.tasks, DECISIONS: this.P.decisions, PRIVATE: this.P.private }[file];
         fs.writeFileSync(dest, String(a.content ?? ""));
-        this.emit({ type: "kimi-tool", name, label: `updates notes: ${file}` });
+        this.emit({ type: "lead-tool", name, label: `updates notes: ${file}` });
         return `saved ${file}`;
       }
       case "new_session": {
         this.sessions[a.name] ??= { purpose: a.purpose, created: new Date().toISOString() };
         writeJson(this.P.sessions, this.sessions);
-        this.emit({ type: "kimi-tool", name, label: `new Claude session: ${a.name}` });
+        this.emit({ type: "lead-tool", name, label: `new Claude session: ${a.name}` });
         return `session '${a.name}' ready`;
       }
       case "list_sessions":

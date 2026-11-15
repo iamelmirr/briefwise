@@ -1,6 +1,6 @@
 # My rules for the lead
 
-Only I write this file. The lead reads it before every step and cannot change it.
+Only I write this file. The lead reads it at the start of every task (edits apply from the next task) and cannot change it.
 Write in any language you like; the lead writes to Claude in English.
 
 ## How you may talk to Claude

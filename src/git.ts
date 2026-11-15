@@ -14,7 +14,7 @@ export function git(repo: string, args: string[]): string {
   }
 }
 
-/** Dirty files (modified, staged, untracked, deleted) → two-letter porcelain code. Ignores .kimi/. */
+/** Dirty files (modified, staged, untracked, deleted) → two-letter porcelain code. Ignores .briefwise/ (and legacy .kimi/). */
 export function dirtyFiles(repo: string): Map<string, string> {
   const m = new Map<string, string>();
   const out = git(repo, ["status", "--porcelain", "-uall", "-z"]);
@@ -26,7 +26,7 @@ export function dirtyFiles(repo: string): Map<string, string> {
     const code = e.slice(0, 2);
     const file = e.slice(3);
     if (code[0] === "R" || code[0] === "C") i++; // next entry is the original path
-    if (file === ".kimi" || file.startsWith(".kimi/")) continue;
+    if (file === ".briefwise" || file.startsWith(".briefwise/") || file === ".kimi" || file.startsWith(".kimi/")) continue;
     m.set(file, code);
   }
   return m;

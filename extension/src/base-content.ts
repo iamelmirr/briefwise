@@ -3,7 +3,7 @@
 import * as vscode from "vscode";
 import { execFileSync } from "node:child_process";
 
-export const BASE_SCHEME = "kimi-lead-base";
+export const BASE_SCHEME = "briefwise-base";
 
 export function baseUri(repo: string, rel: string, empty = false): vscode.Uri {
   return vscode.Uri.from({ scheme: BASE_SCHEME, path: `/${rel}`, query: new URLSearchParams({ repo, ...(empty ? { empty: "1" } : {}) }).toString() });

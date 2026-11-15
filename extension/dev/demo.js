@@ -9,12 +9,12 @@
   const ce = (dt, session, event) => e(dt, { type: "claude-event", session, event });
 
   e(0, { type: "user", text: "add rate limiting to /api/orders, max 30 requests per minute per user. don't touch the other routes" });
-  e(400, { type: "kimi-start" });
-  e(900, { type: "kimi-tool", name: "read_file", label: "reads src/routes/orders.ts 1–120" });
-  e(300, { type: "kimi-tool", name: "grep", label: "searches \"rateLimit|limiter\"" });
-  e(200, { type: "kimi-tool", name: "list_files", label: "lists files (middleware)" });
-  e(1200, { type: "kimi-text", delta: "There's no existing limiter, and `src/middleware/` already has a pattern for Express middleware. Asking Claude for options without a new dependency." });
-  e(100, { type: "kimi-end", promptTokens: 6120, cachedTokens: 4800 });
+  e(400, { type: "lead-start" });
+  e(900, { type: "lead-tool", name: "read_file", label: "reads src/routes/orders.ts 1–120" });
+  e(300, { type: "lead-tool", name: "grep", label: "searches \"rateLimit|limiter\"" });
+  e(200, { type: "lead-tool", name: "list_files", label: "lists files (middleware)" });
+  e(1200, { type: "lead-text", delta: "There's no existing limiter, and `src/middleware/` already has a pattern for Express middleware. Asking Claude for options without a new dependency." });
+  e(100, { type: "lead-end", promptTokens: 6120, cachedTokens: 4800 });
 
   const askPrompt = `Investigate src/routes/orders.ts and src/middleware/.
 Goal: per-user rate limiting on /api/orders only, max 30 requests per 60 s window.
@@ -33,9 +33,9 @@ Propose 2-3 implementation options with trade-offs (storage, where to hook in, b
   ce(4200, "orders", { kind: "text", text: "Three options fit:\n\n1. **Fixed window in memory**: a `Map<userId, {count, resetAt}>` in a new `rateLimit.ts`. Simplest; resets abruptly at the window edge.\n2. **Sliding window in memory**: keep the last 30 timestamps per user. Smooth limiting, small memory cost. Same middleware shape as `requireAuth`.\n3. **Redis**: correct across instances, but needs a new dependency and infra.\n\nThe repo runs a single instance (`Dockerfile`, no cluster), so option 2 fits best.\n\nREPORT: read-only, no changes. Recommend option 2." });
   e(600, { type: "claude-end", session: "orders", result: { text: "…", isError: false, costUsd: 0.084, sessionId: "a1" } });
 
-  e(300, { type: "kimi-start" });
-  e(1500, { type: "kimi-text", delta: "Going with **option 2**, an in-memory sliding window: no new dependency, and the app runs as a single instance. Handing it to Claude to implement." });
-  e(100, { type: "kimi-end", promptTokens: 8410, cachedTokens: 6900 });
+  e(300, { type: "lead-start" });
+  e(1500, { type: "lead-text", delta: "Going with **option 2**, an in-memory sliding window: no new dependency, and the app runs as a single instance. Handing it to Claude to implement." });
+  e(100, { type: "lead-end", promptTokens: 8410, cachedTokens: 6900 });
 
   const implPrompt = `Implement option 2 (sliding window, in memory) as Express middleware.
 - New file src/middleware/rateLimit.ts exporting rateLimit({ limit, windowMs }) keyed by req.user.id.
@@ -88,13 +88,13 @@ export function rateLimit({ limit, windowMs }: { limit: number; windowMs: number
   push(2200, { type: "claude-event", session: "orders", event: { kind: "text", text: "REPORT: added src/middleware/rateLimit.ts (sliding window), mounted on the orders router only, 2 new tests. npm test -- orders: 6/6 pass." } });
   push(200, { type: "claude-files", session: "orders", files: [{ file: "src/middleware/rateLimit.ts", code: "??" }, { file: "src/routes/orders.ts", code: " M" }, { file: "test/orders.test.ts", code: " M" }] });
   push(100, { type: "claude-end", session: "orders", result: { text: "…", isError: false, costUsd: 0.214, sessionId: "a1" } });
-  push(300, { type: "kimi-start" });
-  push(700, { type: "kimi-tool", name: "git", label: "git diff --stat" });
-  push(400, { type: "kimi-tool", name: "update_notes", label: "updates notes: DECISIONS" });
-  push(1500, { type: "task-end", report: "Done. `/api/orders` is now limited to 30 requests per minute per user; above that it returns **429** with `Retry-After`.\n\n- New middleware: `src/middleware/rateLimit.ts` (in-memory sliding window, no new dependency)\n- Applied only to the orders routes; other routes are untouched\n- Tests: 6/6 pass\n\nOpen: if you ever run more than one instance, the limit should move to Redis.", streamed: false, kimiUsd: 0.011, claudeUsd: 0.298 });
+  push(300, { type: "lead-start" });
+  push(700, { type: "lead-tool", name: "git", label: "git diff --stat" });
+  push(400, { type: "lead-tool", name: "update_notes", label: "updates notes: DECISIONS" });
+  push(1500, { type: "task-end", report: "Done. `/api/orders` is now limited to 30 requests per minute per user; above that it returns **429** with `Retry-After`.\n\n- New middleware: `src/middleware/rateLimit.ts` (in-memory sliding window, no new dependency)\n- Applied only to the orders routes; other routes are untouched\n- Tests: 6/6 pass\n\nOpen: if you ever run more than one instance, the limit should move to Redis.", streamed: false, leadUsd: 0.011, claudeUsd: 0.298 });
   push(200, { type: "guard", issues: ["dependencies: package.json"] });
 
-  const base = { repo: REPO, repoName: "shop-api", branch: "kimi/rate-limit", model: "moonshotai/kimi-k3.1-pro", claudeModel: null, contextLimit: 40000, claudeBin: "C:\\Users\\dev\\.local\\bin\\claude.exe", claudeFound: true };
+  const base = { repo: REPO, repoName: "shop-api", branch: "feat/rate-limit", model: "moonshotai/kimi-k3.1-pro", claudeModel: null, contextLimit: 40000, claudeBin: "C:\\Users\\dev\\.local\\bin\\claude.exe", claudeFound: true };
   window.demoInit = (state) => ({
     ...base,
     hasKey: state !== "nokey",

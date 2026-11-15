@@ -1,4 +1,4 @@
-// Terminal UI for kimi-lead: chat with the lead, watch Claude Code work live.
+// Terminal UI for Briefwise: chat with the lead, watch Claude Code work live.
 
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
@@ -22,33 +22,33 @@ const bar = c.magenta("│ ");
 const TOOL_COLOR: Record<string, (s: string) => string> = { Edit: c.yellow, MultiEdit: c.yellow, Write: c.yellow, Bash: c.blue };
 
 if (["-h", "--help"].includes(process.argv[2] ?? "")) {
-  console.log(`kimi-lead: run it in the project's root folder.
-  kimi-lead            interactive
-  kimi-lead "task"     run one task, then exit
+  console.log(`briefwise: run it in the project's root folder.
+  briefwise            interactive
+  briefwise "task"     run one task, then exit
 While running: Ctrl+C stops the task; while Claude is working, anything you type goes straight to Claude.
 Requires: OPENROUTER_API_KEY and an installed, signed-in 'claude'.`);
   process.exit(0);
 }
 
-let kimiOpen = false;
+let leadOpen = false;
 let thinking = false;
 
 function render(lead: Lead, e: LeadEvent) {
   switch (e.type) {
-    case "kimi-start":
-      kimiOpen = false; thinking = false;
+    case "lead-start":
+      leadOpen = false; thinking = false;
       break;
-    case "kimi-reasoning":
-      if (!thinking && !kimiOpen) { line(c.dim(`  ${leadName(lead.cfg.model)} is thinking…`)); thinking = true; }
+    case "lead-reasoning":
+      if (!thinking && !leadOpen) { line(c.dim(`  ${leadName(lead.cfg.model)} is thinking…`)); thinking = true; }
       break;
-    case "kimi-text":
-      if (!kimiOpen) { line(); out(c.cyan(c.bold(`${leadName(lead.cfg.model)}  `))); kimiOpen = true; }
+    case "lead-text":
+      if (!leadOpen) { line(); out(c.cyan(c.bold(`${leadName(lead.cfg.model)}  `))); leadOpen = true; }
       out(e.delta);
       break;
-    case "kimi-end":
-      if (kimiOpen) line();
+    case "lead-end":
+      if (leadOpen) line();
       break;
-    case "kimi-tool":
+    case "lead-tool":
       line(c.dim(`  · ${e.label}`));
       break;
     case "claude-start": {
@@ -64,7 +64,7 @@ function render(lead: Lead, e: LeadEvent) {
       if (ev.kind === "text") {
         const ls = ev.text.trim().split("\n");
         for (const l of ls.slice(0, 20)) line(bar + l);
-        if (ls.length > 20) line(bar + c.dim(`… (${ls.length - 20} more lines in .kimi/log.md)`));
+        if (ls.length > 20) line(bar + c.dim(`… (${ls.length - 20} more lines in .briefwise/log.md)`));
       } else if (ev.kind === "user") {
         line(bar + c.cyan(c.bold("you → Claude: ")) + ev.text);
       } else if (ev.kind === "tool") {
@@ -93,7 +93,7 @@ function render(lead: Lead, e: LeadEvent) {
       break;
     case "task-end":
       if (!e.streamed) { line(); line(c.cyan(c.bold(`${leadName(lead.cfg.model)}  `)) + e.report); }
-      line(c.dim(`  [task cost:${leadName(lead.cfg.model)} $${e.kimiUsd.toFixed(3)} · Claude $${e.claudeUsd.toFixed(3)}]`));
+      line(c.dim(`  [task cost:${leadName(lead.cfg.model)} $${e.leadUsd.toFixed(3)} · Claude $${e.claudeUsd.toFixed(3)}]`));
       break;
   }
 }
@@ -161,7 +161,7 @@ rl.on("close", () => {
   if (!lead.busy && !oneShot) process.exit(0);
 });
 
-line(`${c.bold("kimi-lead")} · ${lead.repo}`);
+line(`${c.bold("Briefwise")} · ${lead.repo}`);
 line(c.dim(`Lead: ${lead.cfg.model} · Claude Code: ${lead.claudeBin} (model: ${lead.cfg.claude.model ?? "your default"})`));
 line(c.dim("Commands: /new  /model [id]  /claude [opus|sonnet|haiku|default]  /sessions  /rules  /private  /exit · Ctrl+C stops the task"));
 

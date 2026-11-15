@@ -1,8 +1,8 @@
 {
-  "name": "kimi-lead",
-  "displayName": "Kimi Lead",
-  "description": "Talk to a lead model (any OpenRouter model, Kimi by default); it briefs the real Claude Code, and you watch Claude work live.",
-  "version": "0.3.0",
+  "name": "briefwise",
+  "displayName": "Briefwise",
+  "description": "Talk to a lead model (any OpenRouter model). It turns your words into precise briefs for the real Claude Code, and you watch Claude work live.",
+  "version": "0.4.0",
   "publisher": "iamelmirr",
   "private": true,
   "license": "MIT",
@@ -12,40 +12,48 @@
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "briefwise",
+    "claude",
+    "claude code",
+    "openrouter",
+    "lead",
+    "ai"
+  ],
   "main": "./dist/extension.js",
   "activationEvents": [],
   "contributes": {
     "commands": [
       {
-        "command": "kimiLead.open",
+        "command": "briefwise.open",
         "title": "Open",
-        "category": "Kimi Lead",
+        "category": "Briefwise",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "kimiLead.setApiKey",
+        "command": "briefwise.setApiKey",
         "title": "Set OpenRouter key",
-        "category": "Kimi Lead"
+        "category": "Briefwise"
       },
       {
-        "command": "kimiLead.clearApiKey",
+        "command": "briefwise.clearApiKey",
         "title": "Clear OpenRouter key",
-        "category": "Kimi Lead"
+        "category": "Briefwise"
       },
       {
-        "command": "kimiLead.stop",
+        "command": "briefwise.stop",
         "title": "Stop task",
-        "category": "Kimi Lead"
+        "category": "Briefwise"
       },
       {
-        "command": "kimiLead.newConversation",
+        "command": "briefwise.newConversation",
         "title": "New conversation",
-        "category": "Kimi Lead"
+        "category": "Briefwise"
       }
     ],
     "keybindings": [
       {
-        "command": "kimiLead.open",
+        "command": "briefwise.open",
         "key": "ctrl+alt+k",
         "mac": "cmd+alt+k"
       }
@@ -55,7 +63,8 @@
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc -p .",
-    "package": "node build.mjs && vsce package --no-dependencies -o kimi-lead.vsix"
+    "package": "node build.mjs && vsce package --no-dependencies -o briefwise.vsix",
+    "test": "node build.mjs && node dev/run-host-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -66,10 +75,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/iamelmirr/kimi-lead.git"
+    "url": "https://github.com/iamelmirr/briefwise.git"
   },
-  "homepage": "https://github.com/iamelmirr/kimi-lead#readme",
+  "homepage": "https://github.com/iamelmirr/briefwise#readme",
   "bugs": {
-    "url": "https://github.com/iamelmirr/kimi-lead/issues"
+    "url": "https://github.com/iamelmirr/briefwise/issues"
   }
 }

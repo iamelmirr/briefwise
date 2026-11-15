@@ -1,4 +1,4 @@
-// Config, paths and small file helpers for the .kimi/ folder inside a project.
+// Config, paths and small file helpers for the .briefwise/ folder inside a project.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -7,14 +7,14 @@ import { fileURLToPath } from "node:url";
 export type Config = {
   model: string;
   provider: Record<string, unknown> | null; // OpenRouter provider routing, e.g. { "sort": "throughput" }
-  reasoningEffort: string | null;           // Kimi's default thinking: "low" | "medium" | "high" | null (model default)
+  reasoningEffort: string | null;           // the lead's default thinking: "low" | "medium" | "high" | null (model default)
   decisionEffort: string | null;            // thinking right after Claude returned options
   maxAskRounds: number;                     // ask_claude calls allowed per task
-  maxSteps: number;                         // Kimi tool-loop steps per task
+  maxSteps: number;                         // lead tool-loop steps per task
   context: {
     softTokens: number;                     // above this: prune old reads and old reasoning
     hardTokens: number;                     // above this: drop earlier turns, then summarize the task
-    keepTaskPairs: number;                  // earlier (question, report) pairs Kimi sees
+    keepTaskPairs: number;                  // earlier (question, report) pairs the lead sees
   };
   read: { maxLines: number; maxChars: number; grepMax: number };
   claude: {
@@ -23,9 +23,9 @@ export type Config = {
     model: string | null;
     effort: string | null;
     maxBudgetUsdPerCall: number | null;
-    reportMaxChars: number;                 // how much of Claude's final reply Kimi gets
+    reportMaxChars: number;                 // how much of Claude's final reply the lead gets
     implementAllow: string[];               // extra tools Claude may use when implementing
-    denyRead: string[];                     // paths neither Claude nor Kimi may read
+    denyRead: string[];                     // paths neither Claude nor the lead may read
   };
   forbidden: string[];                      // regexes that must never appear in a prompt to Claude
 };
@@ -46,16 +46,16 @@ export const DEFAULT_CONFIG: Config = {
     effort: null,
     maxBudgetUsdPerCall: null,
     reportMaxChars: 6_000,
-    implementAllow: [],
+    implementAllow: ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
     denyRead: [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"],
   },
   forbidden: [],
 };
 
-export type Paths = ReturnType<typeof kimiPaths>;
+export type Paths = ReturnType<typeof projectPaths>;
 
-export function kimiPaths(repo: string) {
-  const dir = path.join(repo, ".kimi");
+export function projectPaths(repo: string) {
+  const dir = path.join(repo, ".briefwise");
   return {
     dir,
     config: path.join(dir, "config.json"),
@@ -93,10 +93,13 @@ function merge<T>(base: T, over: unknown): T {
   return out as T;
 }
 
-/** Create .kimi/ from templates if needed, keep it out of git, and load the config. */
+/** Create .briefwise/ from templates if needed, keep it out of git, and load the config. */
 export function init(repo: string, templatesDir?: string): { cfg: Config; P: Paths } {
   const TEMPLATES = templatesDir ?? path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
-  const P = kimiPaths(repo);
+  const P = projectPaths(repo);
+  // one-time migration from the legacy .kimi/ folder
+  const legacy = path.join(repo, ".kimi");
+  if (fs.existsSync(legacy) && !fs.existsSync(P.dir)) fs.renameSync(legacy, P.dir);
   fs.mkdirSync(P.dir, { recursive: true });
   const files: [string, string][] = [
     ["RULES.md", P.rules], ["PRIVATE.md", P.private], ["PROJECT.md", P.project],
@@ -108,9 +111,9 @@ export function init(repo: string, templatesDir?: string): { cfg: Config; P: Pat
       fs.writeFileSync(dest, readText(path.join(TEMPLATES, file), fallback));
     }
   }
-  // keep .kimi out of git without touching the team's .gitignore
+  // keep .briefwise out of git without touching the team's .gitignore (a legacy .kimi/ line is left as is)
   const exclude = path.join(repo, ".git", "info", "exclude");
-  if (fs.existsSync(path.dirname(exclude)) && !readText(exclude).includes(".kimi/")) fs.appendFileSync(exclude, "\n.kimi/\n");
+  if (fs.existsSync(path.dirname(exclude)) && !readText(exclude).includes(".briefwise/")) fs.appendFileSync(exclude, "\n.briefwise/\n");
   const cfg = merge(DEFAULT_CONFIG, readJson<unknown>(P.config, {}));
   return { cfg, P };
 }
@@ -133,7 +136,8 @@ function globRe(g: string): RegExp {
 
 export function isDenied(relPath: string, patterns: string[]): boolean {
   const rel = relPath.split(path.sep).join("/").replace(/^\.\//, "");
-  if (rel === ".kimi" || rel.startsWith(".kimi/")) return true;
+  if (rel === ".briefwise" || rel.startsWith(".briefwise/")) return true;
+  if (rel === ".kimi" || rel.startsWith(".kimi/")) return true; // legacy folder
   const base = rel.split("/").pop() ?? rel;
   return patterns.some((p) => {
     const pat = p.replace(/^\.\//, "");

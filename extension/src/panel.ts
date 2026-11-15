@@ -1,4 +1,4 @@
-// The Kimi Lead editor panel: owns one Lead for one repo and bridges it to the webview.
+// The Briefwise editor panel: owns one Lead for one repo and bridges it to the webview.
 
 import * as vscode from "vscode";
 import * as fs from "node:fs";
@@ -8,7 +8,9 @@ import { leadName } from "../../src/names.ts";
 import type { FromWebview, InitData, ModelInfo, NoteName, ToWebview, UIEvent } from "./protocol.ts";
 import { baseUri } from "./base-content.ts";
 
-export const KEY_SECRET = "kimiLead.openrouterKey";
+export const KEY_SECRET = "briefwise.openrouterKey";
+/** Where releases before the Briefwise rename kept the key; moved to KEY_SECRET once on activation. */
+export const LEGACY_KEY_SECRET = "kimiLead.openrouterKey";
 const MAX_TRANSCRIPT = 4000;
 const MODELS_TTL = 10 * 60_000;
 let modelsCache: { at: number; models: ModelInfo[] } | undefined;
@@ -36,8 +38,8 @@ async function fetchModels(): Promise<ModelInfo[]> {
   return models;
 }
 
-export class KimiPanel {
-  static current: KimiPanel | undefined;
+export class BriefwisePanel {
+  static current: BriefwisePanel | undefined;
   static readonly busyChanged = new vscode.EventEmitter<boolean>();
 
   readonly repo: string;
@@ -50,15 +52,15 @@ export class KimiPanel {
   private saveTimer: NodeJS.Timeout | undefined;
   private disposables: vscode.Disposable[] = [];
 
-  static async show(ctx: vscode.ExtensionContext, repo: string): Promise<KimiPanel> {
-    if (KimiPanel.current?.repo === repo) {
-      KimiPanel.current.panel.reveal();
-      return KimiPanel.current;
+  static async show(ctx: vscode.ExtensionContext, repo: string): Promise<BriefwisePanel> {
+    if (BriefwisePanel.current?.repo === repo) {
+      BriefwisePanel.current.panel.reveal();
+      return BriefwisePanel.current;
     }
-    KimiPanel.current?.panel.dispose();
+    BriefwisePanel.current?.panel.dispose();
     const key = await ctx.secrets.get(KEY_SECRET);
-    KimiPanel.current = new KimiPanel(ctx, repo, key);
-    return KimiPanel.current;
+    BriefwisePanel.current = new BriefwisePanel(ctx, repo, key);
+    return BriefwisePanel.current;
   }
 
   private constructor(ctx: vscode.ExtensionContext, repo: string, key: string | undefined) {
@@ -72,7 +74,7 @@ export class KimiPanel {
     );
     this.transcript = this.loadTranscript();
 
-    this.panel = vscode.window.createWebviewPanel("kimiLead", `Kimi Lead: ${path.basename(repo)}`, vscode.ViewColumn.Active, {
+    this.panel = vscode.window.createWebviewPanel("briefwise", `Briefwise: ${path.basename(repo)}`, vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, "dist"), vscode.Uri.joinPath(ctx.extensionUri, "media")],
@@ -112,9 +114,9 @@ export class KimiPanel {
 
   /** Keep a compact transcript so the panel looks the same after a reload. */
   private record(ev: UIEvent) {
-    if (ev.type === "kimi-reasoning") return;
+    if (ev.type === "lead-reasoning") return;
     const last = this.transcript[this.transcript.length - 1];
-    if (ev.type === "kimi-text" && last?.type === "kimi-text") {
+    if (ev.type === "lead-text" && last?.type === "lead-text") {
       this.transcript[this.transcript.length - 1] = { ...last, delta: last.delta + ev.delta };
     } else if (ev.type === "claude-event" && ev.event.kind === "tool_result") {
       this.transcript.push({ ...ev, event: { ...ev.event, text: ev.event.text.slice(0, 600) } });
@@ -137,7 +139,7 @@ export class KimiPanel {
 
   private saveTranscript() {
     clearTimeout(this.saveTimer);
-    try { fs.writeFileSync(this.transcriptPath, JSON.stringify(this.transcript)); } catch { /* .kimi missing */ }
+    try { fs.writeFileSync(this.transcriptPath, JSON.stringify(this.transcript)); } catch { /* lead folder missing */ }
   }
 
   private post(m: ToWebview) { void this.panel.webview.postMessage(m); }
@@ -225,14 +227,14 @@ export class KimiPanel {
     this.push({ type: "user", text, ts: Date.now() });
     try {
       const running = this.lead.run(text); // sets lead.busy synchronously, before its first await
-      KimiPanel.busyChanged.fire(true);
+      BriefwisePanel.busyChanged.fire(true);
       this.postState();
       await running;
     } catch (e: any) {
       this.push({ type: "error", text: String(e?.message ?? e), ts: Date.now() });
     } finally {
       for (const id of [...this.asks.keys()]) this.answer(id, null);
-      KimiPanel.busyChanged.fire(false);
+      BriefwisePanel.busyChanged.fire(false);
       this.postState();
       this.saveTranscript();
     }
@@ -279,8 +281,14 @@ export class KimiPanel {
       void vscode.window.showWarningMessage("Claude is working in the background. Wait for it to finish before resuming the session by hand.");
       return;
     }
-    const term = vscode.window.createTerminal({ name: `Claude: ${session}`, cwd: this.repo, shellPath: this.lead.claudeBin, shellArgs: ["--resume", id] });
+    const term = vscode.window.createTerminal({ name: `Claude: ${session}`, cwd: this.repo, ...this.resumeShell(id) });
     term.show();
+  }
+
+  /** How to start `claude --resume <id>` in a terminal. An npm-installed Claude resolves to a JS entry, run by node. */
+  private resumeShell(id: string): { shellPath: string; shellArgs: string[] } {
+    const bin = this.lead.claudeBin;
+    return /\.[cm]?js$/i.test(bin) ? { shellPath: "node", shellArgs: [bin, "--resume", id] } : { shellPath: bin, shellArgs: ["--resume", id] };
   }
 
   // ───────────── html ─────────────
@@ -297,7 +305,7 @@ export class KimiPanel {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${w.cspSource}; img-src ${w.cspSource} data:; font-src ${w.cspSource}; script-src 'nonce-${nonce}';">
 <link rel="stylesheet" href="${css}">
-<title>Kimi Lead</title>
+<title>Briefwise</title>
 </head>
 <body>
 <script nonce="${nonce}" src="${js}"></script>
@@ -306,11 +314,11 @@ export class KimiPanel {
   }
 
   dispose() {
-    if (KimiPanel.current === this) KimiPanel.current = undefined;
+    if (BriefwisePanel.current === this) BriefwisePanel.current = undefined;
     if (this.lead.busy) this.lead.stop();
     for (const id of [...this.asks.keys()]) this.answer(id, null);
     this.saveTranscript();
-    KimiPanel.busyChanged.fire(false);
+    BriefwisePanel.busyChanged.fire(false);
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
   }

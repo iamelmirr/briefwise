@@ -95,7 +95,7 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
 
 (async () => {
   ext.activate(ctx);
-  await vscode.commands.executeCommand("kimiLead.open");
+  await vscode.commands.executeCommand("briefwise.open");
   assert.ok(onWebviewMessage, "webview message handler registered");
 
   await send({ type: "ready" });
@@ -103,13 +103,13 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
   assert.ok(init, "init posted");
   assert.equal(init.data.hasKey, false);
   assert.equal(init.data.claudeFound, true, `claude found at ${init.data.claudeBin}`);
-  assert.ok(fs.existsSync(path.join(repo, ".kimi", "PRIVATE.md")), "templates copied into .kimi");
+  assert.ok(fs.existsSync(path.join(repo, ".briefwise", "PRIVATE.md")), "templates copied into .briefwise");
   console.log("✓ init:", init.data.repoName, init.data.branch, init.data.model);
 
   await send({ type: "send", text: "this must not go through without a key" });
   assert.ok(posted.some((m) => m.type === "toast"), "toast when no key");
   await send({ type: "saveKey", key: "dummy-key" });
-  assert.equal(secrets.get("kimiLead.openrouterKey"), "dummy-key");
+  assert.equal(secrets.get("briefwise.openrouterKey"), "dummy-key");
   assert.equal(posted.filter((m) => m.type === "state").at(-1).hasKey, true);
   console.log("✓ key saved to secret storage");
 
@@ -128,7 +128,7 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
   const ev = events();
   const types = [...new Set(ev.map((e) => e.type))];
   console.log("✓ event types seen:", types.join(", "));
-  for (const t of ["user", "kimi-start", "kimi-text", "kimi-tool", "claude-start", "claude-event", "claude-end", "blocked", "task-end"]) assert.ok(types.includes(t), `saw ${t}`);
+  for (const t of ["user", "lead-start", "lead-text", "lead-tool", "claude-start", "claude-event", "claude-end", "blocked", "task-end"]) assert.ok(types.includes(t), `saw ${t}`);
   assert.ok(ev.every((e) => typeof e.ts === "number"), "every event has ts");
   const acked = ev.some((e) => e.type === "claude-event" && e.event.kind === "user");
   console.log(acked ? "✓ interjection acknowledged by Claude" : "• interjection not acknowledged (Claude may have finished first)");
@@ -136,11 +136,11 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
   console.log(files ? `✓ claude-files: ${files.files.map((f) => f.file).join(", ")}` : "• no claude-files event");
 
   // transcript persisted, deltas coalesced
-  const tp = path.join(repo, ".kimi", "transcript.json");
+  const tp = path.join(repo, ".briefwise", "transcript.json");
   await until(() => fs.existsSync(tp));
   const tr = JSON.parse(fs.readFileSync(tp, "utf8"));
   assert.ok(tr.length > 5 && tr.length < ev.length, `transcript compacted (${tr.length} < ${ev.length})`);
-  assert.ok(!tr.some((e) => e.type === "kimi-reasoning"), "no reasoning in transcript");
+  assert.ok(!tr.some((e) => e.type === "lead-reasoning"), "no reasoning in transcript");
   console.log(`✓ transcript saved: ${tr.length} events (live stream had ${ev.length})`);
 
   // reload: a new "ready" gets the transcript back
@@ -157,11 +157,11 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
   await send({ type: "openDiff", path: "math.js" });
   const diff = executed.find((x) => x[0] === "vscode.diff");
   assert.ok(diff, "vscode.diff executed");
-  const base = providers["kimi-lead-base"].provideTextDocumentContent(diff[1]);
+  const base = providers["briefwise-base"].provideTextDocumentContent(diff[1]);
   assert.ok(base.includes("function div(a, b) { return a / b; }"), "base content is HEAD version");
   console.log("✓ diff opens HEAD ↔ working copy:", diff[3]);
   await send({ type: "openNote", name: "RULES" });
-  assert.ok(shown.at(-1).endsWith(path.join(".kimi", "RULES.md")));
+  assert.ok(shown.at(-1).endsWith(path.join(".briefwise", "RULES.md")));
   await send({ type: "resume", session: "math" });
   assert.ok(log.some((l) => l.startsWith("terminal:") && l.includes("--resume")), "resume opens terminal with --resume");
   console.log("✓ notes, resume:", log.find((l) => l.startsWith("terminal:")));

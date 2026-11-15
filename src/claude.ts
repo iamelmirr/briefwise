@@ -27,14 +27,38 @@ export type ClaudeRun = {
 
 /** Find the claude binary: config → CLAUDE_BIN → PATH → ~/.local/bin (native installer default). */
 export function resolveClaudeBin(configured: string | null): string {
-  if (configured) return configured;
-  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
-  const exe = process.platform === "win32" ? "claude.exe" : "claude";
+  if (configured) return viaNpmShim(configured) ?? configured;
+  if (process.env.CLAUDE_BIN) return viaNpmShim(process.env.CLAUDE_BIN) ?? process.env.CLAUDE_BIN;
+  const win = process.platform === "win32";
+  const exe = win ? "claude.exe" : "claude";
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-    if (dir && fs.existsSync(path.join(dir, exe))) return path.join(dir, exe);
+    if (!dir) continue;
+    if (fs.existsSync(path.join(dir, exe))) return path.join(dir, exe);
+    if (win && fs.existsSync(path.join(dir, "claude.cmd"))) {
+      const entry = viaNpmShim(path.join(dir, "claude.cmd"));
+      if (entry) return entry;
+    }
   }
   const local = path.join(os.homedir(), ".local", "bin", exe);
   return fs.existsSync(local) ? local : "claude";
+}
+
+/**
+ * npm installs Claude Code on Windows as a `claude.cmd` shim, which Node cannot spawn without a shell
+ * (and a shell would mangle our arguments). For a .cmd next to npm's node_modules, return the package's
+ * JavaScript entry instead; startClaude runs .js entries with the current Node. Otherwise null.
+ */
+function viaNpmShim(bin: string): string | null {
+  if (!/\.cmd$/i.test(bin)) return null;
+  const pkg = path.join(path.dirname(bin), "node_modules", "@anthropic-ai", "claude-code");
+  try {
+    const field = JSON.parse(fs.readFileSync(path.join(pkg, "package.json"), "utf8")).bin;
+    const rel = typeof field === "string" ? field : field?.claude;
+    const entry = typeof rel === "string" ? path.join(pkg, rel) : "";
+    return /\.[cm]?js$/.test(entry) && fs.existsSync(entry) ? entry : null;
+  } catch {
+    return null;
+  }
 }
 
 const WORKER_PROMPT = `You are a senior engineer working under a technical lead. All tasks come from the lead.
@@ -80,7 +104,8 @@ export function buildArgs(cfg: Config, mode: Mode, sessionId?: string): string[]
   });
   const deny = [
     ...denyPaths.flatMap((p) => [`Read(${p})`, `Edit(${p})`]),
-    "Read(./.kimi/**)", "Edit(./.kimi/**)", "Write(./.kimi/**)",
+    "Read(./.briefwise/**)", "Edit(./.briefwise/**)", "Write(./.briefwise/**)",
+    "Read(./.kimi/**)", "Edit(./.kimi/**)", "Write(./.kimi/**)", // legacy folder
     "Bash(git push:*)", "Bash(git reset:*)", "Bash(git checkout:*)", "Bash(git clean:*)", "Bash(rm:*)",
     ...(mode === "ask" ? ["Edit", "Write", "NotebookEdit"] : []),
   ];
@@ -104,8 +129,21 @@ export function buildArgs(cfg: Config, mode: Mode, sessionId?: string): string[]
 
 function killTree(child: ChildProcess): void {
   if (child.exitCode !== null || !child.pid) return;
-  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-  else child.kill("SIGTERM");
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
+  // Claude runs as the leader of its own process group (detached), so signal the whole group,
+  // otherwise its subprocesses (shells, tools) survive.
+  const pid = child.pid;
+  const signalGroup = (sig: NodeJS.Signals): boolean => {
+    try { process.kill(-pid, sig); return true; } catch { return false; }
+  };
+  if (!signalGroup("SIGTERM")) child.kill("SIGTERM");
+  const timer = setTimeout(() => {
+    if (!signalGroup("SIGKILL") && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, 3000);
+  timer.unref();
 }
 
 function resultText(content: unknown): string {
@@ -115,7 +153,16 @@ function resultText(content: unknown): string {
 }
 
 export function startClaude(o: { bin: string; repo: string; args: string[]; prompt: string; onEvent(e: ClaudeEvent): void }): ClaudeRun {
-  const child = spawn(o.bin, o.args, { cwd: o.repo, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  // Test/dev hook: a "claude" that is a JS file (e.g. test/fixtures/fake-claude.mjs) runs with the current Node,
+  // so claude.path can point at a script portably (Windows cannot spawn a .mjs directly).
+  const viaNode = /\.[cm]?js$/i.test(o.bin);
+  // detached on macOS/Linux: Claude leads its own process group, so killTree can stop its subprocesses too.
+  // (No unref: we still wait for it.)
+  const child = spawn(viaNode ? process.execPath : o.bin, viaNode ? [o.bin, ...o.args] : o.args, {
+    cwd: o.repo, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32",
+    // inside VS Code, process.execPath is the Electron binary; this makes it behave as plain Node
+    ...(viaNode ? { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } } : {}),
+  });
   // sent: messages written to stdin; acked: messages Claude replayed back (it may fold an interjection into the
   // running turn, so there is not always one result per message). Close stdin once a turn ends with all acked.
   let sent = 0, acked = 0, buf = "", err = "", cost = 0, stopped = false;
@@ -171,7 +218,7 @@ export function startClaude(o: { bin: string; repo: string; args: string[]; prom
 
   const done = new Promise<ClaudeResult>((resolve) => {
     child.on("error", (e) => resolve({
-      text: `ERROR: could not start Claude Code (${o.bin}): ${e.message}. Set "claude.path" in .kimi/config.json.`,
+      text: `ERROR: could not start Claude Code (${o.bin}): ${e.message}. Set "claude.path" in .briefwise/config.json.`,
       isError: true, costUsd: 0,
     }));
     child.on("close", (code) => {

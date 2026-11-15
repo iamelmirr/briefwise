@@ -1,4 +1,4 @@
-// Kimi Lead webview: left = conversation with the lead model, right = Claude Code sessions, live.
+// Briefwise webview: left = conversation with the lead model, right = Claude Code sessions, live.
 
 import type { FromWebview, InitData, ModelInfo, NoteName, ToWebview, UIEvent } from "../src/protocol.ts";
 import { leadName } from "../../src/names.ts";
@@ -9,7 +9,9 @@ import { diffStats, lineDiff } from "./diff.ts";
 declare function acquireVsCodeApi(): { postMessage(m: unknown): void; getState(): any; setState(s: any): void };
 const vscode = acquireVsCodeApi();
 const post = (m: FromWebview) => vscode.postMessage(m);
-const saved: { split?: number; view?: "kimi" | "claude"; draft?: string } = vscode.getState() ?? {};
+const saved: { split?: number; view?: "lead" | "claude"; draft?: string } = vscode.getState() ?? {};
+// state saved before the Briefwise rename called the lead pane "kimi"
+if ((saved.view as string) === "kimi") saved.view = "lead";
 const persist = () => vscode.setState(saved);
 
 // ───────────── tiny DOM helper ─────────────
@@ -46,13 +48,13 @@ const clock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: "2-dig
 // ───────────── state ─────────────
 
 let info: InitData | null = null;
-/** Display name of the lead model ("Kimi", "Qwen", "GLM"…); follows the chosen model. */
-let LN = "Kimi";
+/** Display name of the lead model ("Qwen", "GLM", "DeepSeek"…); follows the chosen model. */
+let LN = "Lead";
 let busy = false;
 let replaying = false;
 let lastUserTs = 0;
 let waitingAnswer = false;
-const totals = { kimi: 0, claude: 0 };
+const totals = { lead: 0, claude: 0 };
 
 type ToolView = { row: HTMLElement; detail: HTMLElement; status: HTMLElement; name: string };
 type RunView = {
@@ -65,7 +67,7 @@ const sessions = new Map<string, SessionView>();
 let activeSession: string | null = null;
 let liveRun: RunView | null = null;
 
-let kimiMsg: { body: HTMLElement; text: string; queued: boolean } | null = null;
+let leadMsg: { body: HTMLElement; text: string; queued: boolean } | null = null;
 let thinking: { el: HTMLElement; ticker: HTMLElement; text: string } | null = null;
 
 // ───────────── shell ─────────────
@@ -100,14 +102,14 @@ const header = h("header", { class: "top" },
 );
 
 // view switch for narrow widths
-const segKimiLabel = h("span", null, LN);
-const segKimi = h("button", { class: "seg-btn", onclick: () => setView("kimi") }, segKimiLabel);
+const segLeadLabel = h("span", null, LN);
+const segLead = h("button", { class: "seg-btn", onclick: () => setView("lead") }, segLeadLabel);
 const segClaudeDot = h("span", { class: "live-dot", hidden: true });
 const segClaude = h("button", { class: "seg-btn", onclick: () => setView("claude") }, "Claude", segClaudeDot);
-const seg = h("div", { class: "seg", role: "tablist" }, segKimi, segClaude);
+const seg = h("div", { class: "seg", role: "tablist" }, segLead, segClaude);
 
 // lead pane
-const kimiFeed = h("div", { class: "feed kimi-feed", role: "log", "aria-label": "Conversation" });
+const leadFeed = h("div", { class: "feed lead-feed", role: "log", "aria-label": "Conversation" });
 const input = h("textarea", { class: "input", rows: 1, placeholder: "Tell the lead what to do…", "aria-label": "Message" }) as HTMLTextAreaElement;
 const sendBtn = h("button", { class: "send", title: "Send (Enter)", "aria-label": "Send", onclick: () => submit() }, icon("send"));
 const ctxBar = h("span", { class: "meter-fill" });
@@ -116,7 +118,7 @@ const costText = h("span", { class: "meta-item" });
 const modelLabel = h("span", { class: "model-name" });
 const modelBtn = h("button", { class: "model-btn", title: "Choose the lead model", "aria-haspopup": "listbox", "aria-expanded": "false", onclick: (e: Event) => { e.stopPropagation(); togglePicker(); } },
   h("span", { class: "model-dot" }), modelLabel, icon("caret", "model-caret"));
-const pickSearch = h("input", { class: "pick-search", placeholder: "Search models: kimi, qwen, glm, deepseek, gemini…", "aria-label": "Search models", spellcheck: "false", autocomplete: "off" }) as HTMLInputElement;
+const pickSearch = h("input", { class: "pick-search", placeholder: "Search models: qwen, glm, deepseek, gemini…", "aria-label": "Search models", spellcheck: "false", autocomplete: "off" }) as HTMLInputElement;
 const pickList = h("div", { class: "pick-list", role: "listbox", "aria-label": "Lead models" });
 const picker = h("div", { class: "picker", hidden: true, onclick: (e: Event) => e.stopPropagation() },
   h("div", { class: "pick-top" }, icon("search", "pick-ico"), pickSearch),
@@ -127,7 +129,7 @@ const composer = h("div", { class: "composer-wrap" },
   h("div", { class: "composer" }, input, sendBtn),
   h("div", { class: "meta" }, modelBtn, h("span", { class: "meter", title: "How full the lead model's context is" }, h("span", { class: "meter-track" }, ctxBar), ctxText), costText),
 );
-const kimiPane = h("section", { class: "pane pane-kimi", "aria-label": "Lead" }, kimiFeed, composer);
+const leadPane = h("section", { class: "pane pane-lead", "aria-label": "Lead" }, leadFeed, composer);
 
 // Claude pane
 const tabs = h("div", { class: "tabs", role: "tablist", "aria-label": "Claude sessions" });
@@ -163,18 +165,18 @@ const claudePane = h("section", { class: "pane pane-claude", "aria-label": "Clau
   h("div", { class: "tabbar" }, tabs, h("div", { class: "menu-wrap" }, claudeModelBtn, claudeMenu), resumeBtn), claudeBody, interject);
 
 const splitter = h("div", { class: "splitter", role: "separator", "aria-orientation": "vertical", tabindex: 0, title: "Drag to resize" });
-const split = h("main", { class: "split" }, kimiPane, splitter, claudePane);
+const split = h("main", { class: "split" }, leadPane, splitter, claudePane);
 const toast = h("div", { class: "toast", role: "status", hidden: true });
 const app = h("div", { class: "app" }, header, seg, split, toast);
 document.body.append(app);
 
-function setView(v: "kimi" | "claude") {
+function setView(v: "lead" | "claude") {
   saved.view = v; persist();
   app.dataset.view = v;
-  segKimi.classList.toggle("on", v === "kimi");
+  segLead.classList.toggle("on", v === "lead");
   segClaude.classList.toggle("on", v === "claude");
 }
-setView(saved.view ?? "kimi");
+setView(saved.view ?? "lead");
 
 // splitter
 function applySplit(p: number) {
@@ -245,7 +247,7 @@ function showToast(text: string) {
 
 // ───────────── status & meta ─────────────
 
-function setStatus(kind: "idle" | "kimi" | "claude" | "ask", text: string) {
+function setStatus(kind: "idle" | "lead" | "claude" | "ask", text: string) {
   status.dataset.kind = kind;
   statusText.textContent = text;
 }
@@ -261,7 +263,7 @@ function refreshChrome() {
   interject.hidden = !(claudeLive && liveRun!.session === activeSession);
   segClaudeDot.hidden = !claudeLive;
   resumeBtn.hidden = !activeSession;
-  costText.textContent = totals.kimi || totals.claude ? `${LN} ${usd(totals.kimi)}  Claude ${usd(totals.claude)}` : "";
+  costText.textContent = totals.lead || totals.claude ? `${LN} ${usd(totals.lead)}  Claude ${usd(totals.claude)}` : "";
   if (!busy && !waitingAnswer) setStatus("idle", "Ready");
 }
 
@@ -276,12 +278,12 @@ function setContext(prompt: number, cached: number) {
 
 // ───────────── lead feed ─────────────
 
-function kimiEmpty(): HTMLElement {
+function leadEmpty(): HTMLElement {
   if (!info?.hasKey) {
     const keyInput = h("input", { class: "key-input", type: "password", placeholder: "sk-or-…", "aria-label": "OpenRouter API key", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
     const save = () => { const k = keyInput.value.trim(); if (k) post({ type: "saveKey", key: k }); };
     keyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
-    return h("div", { class: "empty empty-kimi onboarding" },
+    return h("div", { class: "empty empty-lead-pane onboarding" },
       h("div", { class: "empty-mark" }, h("span", { class: "mark-k" }), h("span", { class: "mark-c" })),
       h("p", { class: "empty-lead" }, "Connect OpenRouter"),
       h("p", { class: "empty-sub" }, `${LN} (the lead model) runs through OpenRouter. Paste an API key; it is kept in VS Code's secret storage, not in the project. Claude Code runs on your subscription and needs no key.`),
@@ -294,7 +296,7 @@ function kimiEmpty(): HTMLElement {
     "Find out why … doesn't work and fix it.",
     "Add tests for … and run them.",
   ];
-  return h("div", { class: "empty empty-kimi" },
+  return h("div", { class: "empty empty-lead-pane" },
     h("div", { class: "empty-mark" }, h("span", { class: "mark-k" }), h("span", { class: "mark-c" })),
     h("p", { class: "empty-lead" }, `What are we working on in ${info.repoName}?`),
     h("p", { class: "empty-sub" }, `Write in your own words. ${LN} turns it into a precise task for Claude Code, and you see everything it hands over on the right.`),
@@ -302,14 +304,14 @@ function kimiEmpty(): HTMLElement {
   );
 }
 
-function resetKimiFeed() {
-  kimiFeed.replaceChildren(kimiEmpty());
-  kimiMsg = null; thinking = null;
+function resetLeadFeed() {
+  leadFeed.replaceChildren(leadEmpty());
+  leadMsg = null; thinking = null;
 }
 
 function feedAppend(node: HTMLElement) {
-  kimiFeed.querySelector(".empty")?.remove();
-  stick(kimiFeed, () => kimiFeed.append(node));
+  leadFeed.querySelector(".empty")?.remove();
+  stick(leadFeed, () => leadFeed.append(node));
 }
 
 function addUser(text: string, ts: number) {
@@ -327,28 +329,28 @@ function startThinking() {
 function stopThinking() { thinking?.el.remove(); thinking = null; }
 
 let mdQueued = false;
-function renderKimiMsg() {
+function renderLeadMsg() {
   mdQueued = false;
-  if (!kimiMsg) return;
-  const m = kimiMsg;
-  stick(kimiFeed, () => m.body.replaceChildren(renderMarkdown(m.text, md)));
+  if (!leadMsg) return;
+  const m = leadMsg;
+  stick(leadFeed, () => m.body.replaceChildren(renderMarkdown(m.text, md)));
 }
-function kimiText(delta: string) {
+function leadText(delta: string) {
   stopThinking();
-  if (!kimiMsg) {
+  if (!leadMsg) {
     const body = h("div", { class: "md" });
-    kimiMsg = { body, text: "", queued: false };
-    feedAppend(h("div", { class: "msg msg-kimi" }, h("div", { class: "who who-kimi" }, LN), body));
+    leadMsg = { body, text: "", queued: false };
+    feedAppend(h("div", { class: "msg msg-lead" }, h("div", { class: "who who-lead" }, LN), body));
   }
-  kimiMsg.text += delta;
-  if (replaying) renderKimiMsg();
-  else if (!mdQueued) { mdQueued = true; requestAnimationFrame(renderKimiMsg); }
+  leadMsg.text += delta;
+  if (replaying) renderLeadMsg();
+  else if (!mdQueued) { mdQueued = true; requestAnimationFrame(renderLeadMsg); }
 }
 
-function kimiTool(label: string, name: string) {
-  const last = kimiFeed.lastElementChild;
+function leadTool(label: string, name: string) {
+  const last = leadFeed.lastElementChild;
   const chip = h("span", { class: "chip" }, icon(name === "grep" ? "search" : name === "update_notes" ? "notes" : name === "new_session" ? "plus" : name === "git" ? "branch" : "file"), label);
-  if (last?.classList.contains("activity")) stick(kimiFeed, () => last.querySelector(".chips")!.append(chip));
+  if (last?.classList.contains("activity")) stick(leadFeed, () => last.querySelector(".chips")!.append(chip));
   else feedAppend(h("div", { class: "activity" }, h("div", { class: "chips" }, chip)));
 }
 
@@ -527,7 +529,7 @@ function startRun(session: string, mode: "ask" | "implement", prompt: string, ts
   const timer = h("span", { class: "run-timer", dataset: { start: String(ts) } }, replaying ? "" : "0 s");
   const promptPre = h("pre", { class: "brief-text" }, prompt.trim());
   const more = h("button", { class: "brief-more", hidden: true, onclick: () => { brief.classList.toggle("expanded"); more.textContent = brief.classList.contains("expanded") ? "Collapse" : "Show full brief"; } }, "Show full brief");
-  const brief = h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: "who who-kimi" }, LN), h("span", { class: "brief-to" }, "hands off to Claude")), promptPre, more);
+  const brief = h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: "who who-lead" }, LN), h("span", { class: "brief-to" }, "hands off to Claude")), promptPre, more);
   const stream = h("div", { class: "stream" });
   const foot = h("div", { class: "run-foot" });
   const el = h("article", { class: `run run-${mode}`, id },
@@ -536,7 +538,7 @@ function startRun(session: string, mode: "ask" | "implement", prompt: string, ts
       h("span", { class: "run-time" }, clock(ts)),
       timer),
     brief, stream, foot);
-  // handoff card in Kimi's feed: the bridge between the two panes
+  // handoff card in the lead's feed: the bridge between the two panes
   const hstatus = h("span", { class: "handoff-status running" }, replaying ? "" : "running");
   const handoff = h("button", { class: `handoff handoff-${mode}`, onclick: () => focusRun(run) },
     h("span", { class: "handoff-rail" }),
@@ -584,7 +586,7 @@ function endRun(run: RunView, isError: boolean, stopped: boolean, cost: number, 
   const s = sessions.get(run.session)!;
   s.tab.querySelector(".live-dot")!.setAttribute("hidden", "");
   if (liveRun === run) liveRun = null;
-  if (busy && !replaying) setStatus("kimi", `${LN} is reviewing Claude's work`);
+  if (busy && !replaying) setStatus("lead", `${LN} is reviewing Claude's work`);
   refreshChrome();
 }
 
@@ -604,31 +606,31 @@ function handle(e: UIEvent) {
   switch (e.type) {
     case "user":
       addUser(e.text, e.ts);
-      kimiMsg = null;
-      if (!replaying) { busy = true; setStatus("kimi", `${LN} is thinking`); refreshChrome(); }
+      leadMsg = null;
+      if (!replaying) { busy = true; setStatus("lead", `${LN} is thinking`); refreshChrome(); }
       break;
-    case "kimi-start":
-      kimiMsg = null;
-      if (!replaying) { startThinking(); if (!liveRun) setStatus("kimi", `${LN} is thinking`); }
+    case "lead-start":
+      leadMsg = null;
+      if (!replaying) { startThinking(); if (!liveRun) setStatus("lead", `${LN} is thinking`); }
       break;
-    case "kimi-reasoning":
+    case "lead-reasoning":
       if (thinking) {
         thinking.text = (thinking.text + e.delta).slice(-400);
         thinking.ticker.textContent = thinking.text.replace(/\s+/g, " ").trim().slice(-140);
       }
       break;
-    case "kimi-text":
-      kimiText(e.delta);
+    case "lead-text":
+      leadText(e.delta);
       break;
-    case "kimi-end":
+    case "lead-end":
       stopThinking();
-      if (kimiMsg) renderKimiMsg();
-      kimiMsg = null;
+      if (leadMsg) renderLeadMsg();
+      leadMsg = null;
       setContext(e.promptTokens, e.cachedTokens);
       break;
-    case "kimi-tool":
-      kimiTool(e.label, e.name);
-      if (!replaying) setStatus("kimi", `${LN} is reading code`);
+    case "lead-tool":
+      leadTool(e.label, e.name);
+      if (!replaying) setStatus("lead", `${LN} is reading code`);
       break;
     case "claude-start":
       stopThinking();
@@ -686,15 +688,15 @@ function handle(e: UIEvent) {
       stopThinking();
       if (!e.streamed) {
         const body = h("div", { class: "md" }, renderMarkdown(e.report, md));
-        feedAppend(h("div", { class: `msg msg-kimi${e.report === "Stopped." ? " msg-stopped" : ""}` }, h("div", { class: "who who-kimi" }, LN), body));
+        feedAppend(h("div", { class: `msg msg-lead${e.report === "Stopped." ? " msg-stopped" : ""}` }, h("div", { class: "who who-lead" }, LN), body));
       }
-      totals.kimi += e.kimiUsd; totals.claude += e.claudeUsd;
+      totals.lead += e.leadUsd; totals.claude += e.claudeUsd;
       const took = lastUserTs ? fmtDuration(e.ts - lastUserTs) : "";
       feedAppend(h("div", { class: "task-foot" },
         took ? h("span", null, took) : null,
-        e.kimiUsd ? h("span", null, `${LN} ${usd(e.kimiUsd)}`) : null,
+        e.leadUsd ? h("span", null, `${LN} ${usd(e.leadUsd)}`) : null,
         e.claudeUsd ? h("span", null, `Claude ${usd(e.claudeUsd)}`) : null));
-      kimiMsg = null;
+      leadMsg = null;
       waitingAnswer = false;
       refreshChrome();
       break;
@@ -736,9 +738,9 @@ function applyConfig(model: string, claudeModel: string | null) {
   modelLabel.textContent = shortModel(model);
   modelBtn.title = `Lead model: ${model}. Click to change.`;
   claudeModelLabel.textContent = `Claude: ${claudeModel ? claudeLabel(claudeModel) : "your default"}`;
-  segKimiLabel.textContent = LN;
-  kimiPane.setAttribute("aria-label", LN);
-  if (kimiFeed.querySelector(".empty")) resetKimiFeed();
+  segLeadLabel.textContent = LN;
+  leadPane.setAttribute("aria-label", LN);
+  if (leadFeed.querySelector(".empty")) resetLeadFeed();
   refreshChrome();
 }
 
@@ -845,12 +847,12 @@ function applyInit(d: InitData) {
   info = d;
   busy = false;
   sessions.clear(); tabs.replaceChildren(); claudeBody.replaceChildren(claudeEmpty);
-  activeSession = null; liveRun = null; totals.kimi = 0; totals.claude = 0;
+  activeSession = null; liveRun = null; totals.lead = 0; totals.claude = 0;
   repoName.textContent = d.repoName;
   repoName.title = d.repo;
   branchName.textContent = d.branch || "no branch";
   applyConfig(d.model, d.claudeModel);
-  resetKimiFeed();
+  resetLeadFeed();
   replaying = true;
   for (const e of d.transcript) handle(e);
   replaying = false;
@@ -861,14 +863,14 @@ function applyInit(d: InitData) {
     const live = liveRun as RunView | null; // set by handle() during replay
     if (live) setStatus("claude", `Claude is working in session ${live.session}`);
     else if (waitingAnswer) setStatus("ask", "Waiting for your answer");
-    else setStatus("kimi", `${LN} is thinking`);
+    else setStatus("lead", `${LN} is thinking`);
   }
   if (!d.claudeFound) {
     claudeBody.prepend(h("div", { class: "alert alert-danger" }, icon("warn"), h("div", { class: "alert-body" },
       h("div", { class: "alert-title" }, "Claude Code not found"),
-      h("div", null, `Looked for: ${d.claudeBin}. Install Claude Code or set "claude.path" in .kimi/config.json.`))));
+      h("div", null, `Looked for: ${d.claudeBin}. Install Claude Code or set "claude.path" in .briefwise/config.json.`))));
   }
-  kimiFeed.scrollTop = kimiFeed.scrollHeight;
+  leadFeed.scrollTop = leadFeed.scrollHeight;
   for (const s of sessions.values()) s.feed.scrollTop = s.feed.scrollHeight;
   refreshChrome();
   if (d.hasKey) input.focus();
@@ -884,7 +886,7 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       busy = m.busy;
       if (info) { info.hasKey = m.hasKey; info.branch = m.branch; }
       branchName.textContent = m.branch || "no branch";
-      if (!hadKey && m.hasKey && kimiFeed.querySelector(".empty")) { resetKimiFeed(); input.focus(); }
+      if (!hadKey && m.hasKey && leadFeed.querySelector(".empty")) { resetLeadFeed(); input.focus(); }
       if (!busy) { stopThinking(); waitingAnswer = false; }
       refreshChrome();
       break;
