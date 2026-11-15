@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format is based on 
 
 ## Unreleased
 
+### Changed
+
+- Messages you send straight to Claude while it works now reach the lead together with Claude's report, marked as your decisions, so the lead's review doesn't undo them.
+
 ## 0.4.0 - 2026-11-15
 
 ### Changed

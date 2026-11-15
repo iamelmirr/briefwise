@@ -158,7 +158,7 @@ const claudeEmpty = h("div", { class: "empty empty-claude" },
   h("p", { class: "empty-sub" }, "The real Claude Code, on your subscription. When it gets a task, you see the exact brief, every file it reads, every command and every edit."),
 );
 claudeBody.append(claudeEmpty);
-const interjectInput = h("textarea", { class: "input", rows: 1, placeholder: "Interject: this goes straight to Claude, the lead doesn't see it", "aria-label": "Message straight to Claude" }) as HTMLTextAreaElement;
+const interjectInput = h("textarea", { class: "input", rows: 1, placeholder: "Message Claude directly (the lead sees it with the report)", "aria-label": "Message straight to Claude" }) as HTMLTextAreaElement;
 const interjectBtn = h("button", { class: "send send-claude", title: "Send to Claude (Enter)", "aria-label": "Send to Claude", onclick: () => submitInterject() }, icon("send"));
 const interject = h("div", { class: "interject", hidden: true }, h("div", { class: "composer composer-claude" }, interjectInput, interjectBtn));
 const claudePane = h("section", { class: "pane pane-claude", "aria-label": "Claude Code" },

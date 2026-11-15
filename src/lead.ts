@@ -86,6 +86,7 @@ export class Lead {
   private opts: LeadOptions;
   private abort?: AbortController;
   private active?: ClaudeRun;
+  private userNotes: string[] = []; // what the user told Claude directly during the current run
   private running = false;
   private stopped = false;
   private warnedDirty = false;
@@ -115,7 +116,9 @@ export class Lead {
   interject(text: string): boolean {
     if (!this.active) return false;
     this.log("user → Claude (interjection)", text);
-    return this.active.interject(text);
+    const ok = this.active.interject(text);
+    if (ok) this.userNotes.push(text);
+    return ok;
   }
 
   newConversation(): void { writeJson(this.P.history, []); }
@@ -203,6 +206,7 @@ How you work:
 - Prompts to Claude: English, self-contained, technical: goal, relevant files/functions, constraints, what "done" means, which checks to run. Never forward the user's words verbatim. Never include anything from PRIVATE or anything the user's rules forbid.
 - Flow: if the approach is not obvious, ask_claude for 2-3 options → choose by the goal and the user's rules → implement → review (Claude's report + git diff) → send fixes if needed → finish.
 - Claude's replies to you are short reports. The user watches Claude's full session live, so do not repeat Claude's details back to them.
+- The user may message Claude directly while it works. Those messages are listed after Claude's report; they are the user's decisions and override your brief, so review against them and never have Claude undo them.
 - When implementing, Claude may run only these commands: ${this.allowedForPrompt()}. Name the right one for checks in your prompt. If Claude reports that a check could not run, have it use an allowed command; if none fits, tell the user which command to add to claude.implementAllow in .briefwise/config.json.
 - Work autonomously until done. escalate_to_user only for: new/changed dependencies, database schema, deleting files, production/deployment, or a genuinely ambiguous goal. A GUARD warning means you must escalate or have Claude revert.
 - One Claude session per workstream (new_session); reuse a session to continue the same work, it remembers.
@@ -436,11 +440,17 @@ ${sess}`;
         const before = mode === "implement" ? snapshot(this.repo) : null;
         this.emit({ type: "claude-start", session, mode, prompt });
         this.log(`→ Claude (${mode}, session ${session})`, prompt);
+        this.userNotes = [];
         const res = await this.runClaude(session, prompt, mode);
+        const notes = this.userNotes;
+        this.userNotes = [];
         this.claudeUsd += res.costUsd;
         this.log(`← Claude (${session})`, res.text);
         this.emit({ type: "claude-end", session, result: res });
         let out = `${res.isError ? "CLAUDE ERROR: " : ""}${clip(res.text, this.cfg.claude.reportMaxChars)}`;
+        if (notes.length) {
+          out += `\n\nTHE USER TOLD CLAUDE DIRECTLY DURING THIS RUN (the user is in charge: treat this as their decision, do not undo it):\n${notes.map((n) => `- ${n}`).join("\n")}`;
+        }
         if (before) {
           const changes = changesSince(this.repo, before);
           if (changes.length) {

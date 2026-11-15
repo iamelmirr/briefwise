@@ -109,7 +109,7 @@ In VS Code each session is a tab in the right pane. **Resume in terminal** opens
 
 ### Interjection
 
-While Claude runs, what you type in Claude's box (VS Code) or at the prompt (CLI) is written into the running process as an extra user message. Claude sees it during its current turn. The lead does not see your interjection; it only gets Claude's final report, which may reflect it. Interjections are recorded in `log.md`.
+While Claude runs, what you type in Claude's box (VS Code) or at the prompt (CLI) is written into the running process as an extra user message. Claude sees it during its current turn. The lead does not watch the run; when it ends, the lead gets Claude's report followed by your interjections, marked as your decisions that it must not undo. Interjections are recorded in `log.md`.
 
 ### Stopping
 

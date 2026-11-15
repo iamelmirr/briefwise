@@ -92,7 +92,7 @@ A footer shows the total time and the cost of the lead and of Claude for this ta
 
 ### While Claude works
 
-- **Interject:** a box appears under Claude's live session. What you type there goes straight into Claude's session. The lead does not see it, only Claude's final report.
+- **Interject:** a box appears under Claude's live session. What you type there goes straight into Claude's session, so you can steer Claude yourself while it works. The lead gets your messages together with Claude's report, marked as your decisions, so it won't have Claude undo them.
 - **Stop:** the **Stop** button, `Esc`, or **Briefwise: Stop task** stops the lead request and kills the Claude process.
 - **Questions:** when the lead needs approval (a new dependency, a schema change, a deletion, deployment) it shows a card with **Approve**, **Decline**, or a box for your own answer.
 - **Resume in terminal:** opens the selected session with `claude --resume <id>` in a VS Code terminal, after Claude has finished. This is plain Claude Code with your normal settings, not Briefwise's guardrails.

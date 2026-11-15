@@ -237,6 +237,29 @@ describe("Lead end-to-end (mock OpenRouter + fake Claude)", { timeout: 20_000 },
     assert.ok(!all.includes("super-secret-value") && !all.includes("secret-key-material"), "denied file contents never reach the lead model");
   });
 
+  test("what the user tells Claude mid-run reaches the lead with the report, marked as the user's decision", async () => {
+    const { lead, fakeLog, setOnEvent } = setup("interject");
+    mock.reset([
+      toolReply("implement", { session: "s3", prompt: "Refactor app.js. [fake:hang]" }),
+      toolReply("finish", { report: "Done, kept the user's choice." }),
+    ]);
+    let sent = false;
+    setOnEvent((e) => {
+      if (!sent && e.type === "claude-event" && e.event.kind === "init") {
+        sent = true;
+        setTimeout(() => assert.equal(lead.interject("use tabs, not spaces"), true), 20);
+      }
+    });
+    const report = await lead.run("refactor the app");
+    assert.equal(report, "Done, kept the user's choice.");
+    assert.ok(fakeLog().some((l) => l.event === "message" && l.text === "use tabs, not spaces"), "Claude got the message");
+    const out = toolMsgs(mock.requests[1].body)[0];
+    assert.match(out, /REPORT:/);
+    assert.match(out, /THE USER TOLD CLAUDE DIRECTLY DURING THIS RUN[^\n]*\n- use tabs, not spaces/);
+    assert.match(String(mock.requests[0].body.messages[0].content), /The user may message Claude directly/);
+    assert.equal(lead.interject("too late"), false, "nothing to interject into once Claude is done");
+  });
+
   test("stop() mid-run kills fake Claude and ends the task with 'Stopped.'", async () => {
     const { lead, events, fakeLog, setOnEvent } = setup("stop");
     mock.reset([
