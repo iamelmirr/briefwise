@@ -28,9 +28,9 @@
   "scripts": {
     "start": "node bin/briefwise.mjs",
     "build": "tsc -p tsconfig.build.json",
-    "prepare": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p .",
-    "test": "node --experimental-strip-types --no-warnings --test \"test/**/*.test.ts\""
+    "test": "node --experimental-strip-types --no-warnings --test \"test/**/*.test.ts\"",
+    "prepack": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
