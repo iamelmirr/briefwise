@@ -29,6 +29,7 @@ This is the template a new project gets:
     "effort": null,
     "maxBudgetUsdPerCall": null,
     "reportMaxChars": 6000,
+    "autoCompact": true,
     "implementAllow": ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
     "denyRead": [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"]
   },
@@ -169,6 +170,12 @@ Passed as `--max-budget-usd` to each Claude Code call when set. It caps the cost
 Default: `6000`
 
 How many characters of Claude's final reply the lead receives. You always see the full session; this only limits what goes into the lead's context.
+
+### claude.autoCompact
+
+Default: `true`
+
+Whether Claude Code may compact a session on its own when the context is nearly full. With `false`, Briefwise starts Claude with `DISABLE_AUTO_COMPACT=1`, so a session is compacted only when you (or the lead, on your request) ask for it; a session that fills up completely then ends its run with an error. Toggle it in the panel's session options or with `/autocompact on|off`. It applies from the next Claude run.
 
 ### claude.implementAllow
 

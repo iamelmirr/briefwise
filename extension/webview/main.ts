@@ -1,6 +1,6 @@
 // Briefwise webview: left = conversation with the lead model, right = Claude Code sessions, live.
 
-import type { FromWebview, InitData, ModelInfo, NoteName, ToWebview, UIEvent } from "../src/protocol.ts";
+import type { FromWebview, InitData, ModelInfo, NoteName, SessionInfo, ToWebview, UIEvent } from "../src/protocol.ts";
 import { leadName } from "../../src/names.ts";
 import { icon } from "./icons.ts";
 import { renderMarkdown, type MdOptions } from "./markdown.ts";
@@ -58,7 +58,7 @@ const totals = { lead: 0, claude: 0 };
 
 type ToolView = { row: HTMLElement; detail: HTMLElement; status: HTMLElement; name: string };
 type RunView = {
-  id: string; session: string; mode: "ask" | "implement"; start: number;
+  id: string; session: string; mode: "ask" | "implement" | "compact"; start: number;
   el: HTMLElement; stream: HTMLElement; foot: HTMLElement; timer: HTMLElement;
   tools: Map<string, ToolView>; handoff: HTMLElement; done: boolean;
 };
@@ -66,6 +66,9 @@ type SessionView = { name: string; tab: HTMLButtonElement; feed: HTMLElement; ru
 const sessions = new Map<string, SessionView>();
 let activeSession: string | null = null;
 let liveRun: RunView | null = null;
+/** Live state of every Claude session (context use, queued compaction), from the extension. */
+const sessInfo = new Map<string, SessionInfo>();
+let autoCompact = true;
 
 let leadMsg: { body: HTMLElement; text: string; queued: boolean } | null = null;
 let thinking: { el: HTMLElement; ticker: HTMLElement; text: string } | null = null;
@@ -87,7 +90,7 @@ const moreMenu = h("div", { class: "menu", role: "menu", hidden: true },
     .map(([name, label]) => h("button", { class: "menu-item", role: "menuitem", onclick: () => { moreMenu.hidden = true; post({ type: "openNote", name }); } }, label)),
 );
 const moreBtn = h("button", { class: "btn btn-ghost btn-icon", title: "More", "aria-haspopup": "menu", onclick: (e: Event) => { e.stopPropagation(); moreMenu.hidden = !moreMenu.hidden; } }, icon("more"));
-document.addEventListener("click", () => { moreMenu.hidden = true; claudeMenu.hidden = true; closePicker(); });
+document.addEventListener("click", () => { moreMenu.hidden = true; claudeMenu.hidden = true; sessMenu.hidden = true; closePicker(); });
 
 const header = h("header", { class: "top" },
   h("div", { class: "where" }, repoName, h("span", { class: "branch" }, icon("branch"), branchName)),
@@ -151,6 +154,78 @@ function renderClaudeMenu() {
       h("span", { class: "cm-item-top" }, h("span", null, label), id === cur ? icon("check", "cm-check") : null),
       h("span", { class: "cm-hint" }, hint))));
 }
+// session control: how full the active session is, and compact / fresh / auto-compact
+const sessFill = h("span", { class: "meter-fill" });
+const sessText = h("span", { class: "meta-item" });
+const sessMeter = h("button", { class: "meter sess-meter", title: "How full this Claude session's context is. Click for session options.", onclick: (e: Event) => { e.stopPropagation(); toggleSessMenu(); } },
+  h("span", { class: "meter-track" }, sessFill), sessText);
+const sessMenu = h("div", { class: "menu menu-session", role: "dialog", "aria-label": "Session options", hidden: true, onclick: (e: Event) => e.stopPropagation() });
+const sessBtn = h("button", { class: "btn btn-ghost btn-icon", title: "Session options: compact, start fresh, auto-compact", "aria-haspopup": "dialog", onclick: (e: Event) => { e.stopPropagation(); toggleSessMenu(); } }, icon("more"));
+const sessCtl = h("div", { class: "menu-wrap sess-ctl" }, sessMeter, sessBtn, sessMenu);
+
+const ktokRound = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+function ctxLong(si: SessionInfo | undefined): string {
+  if (!si) return "";
+  if (!si.started) return "Fresh: Claude starts a new conversation on the next run";
+  if (!si.contextTokens) return "Context size shows after Claude's next run";
+  return si.contextWindow
+    ? `${si.contextTokens.toLocaleString()} of ${si.contextWindow.toLocaleString()} tokens (${Math.round((si.contextTokens / si.contextWindow) * 100)}%)`
+    : `${si.contextTokens.toLocaleString()} tokens`;
+}
+
+function refreshSessCtl() {
+  const si = activeSession ? sessInfo.get(activeSession) : undefined;
+  sessCtl.hidden = !activeSession;
+  const pct = si?.started && si.contextTokens && si.contextWindow ? Math.min(100, (si.contextTokens / si.contextWindow) * 100) : 0;
+  sessFill.style.width = `${pct}%`;
+  sessMeter.dataset.level = pct > 80 ? "high" : pct > 55 ? "mid" : "low";
+  sessText.textContent = !si ? "" : !si.started ? "fresh" : si.contextTokens
+    ? (si.contextWindow ? `${ktokRound(si.contextTokens)} / ${ktokRound(si.contextWindow)}` : ktokRound(si.contextTokens)) : "";
+  sessText.append(si?.compactQueued ? h("span", { class: "sess-queued" }, " · compact queued") : "");
+  sessMeter.setAttribute("aria-label", `Session ${activeSession ?? ""}: ${ctxLong(si)}`);
+  if (!sessMenu.hidden) renderSessMenu();
+}
+
+function toggleSessMenu() {
+  if (!sessMenu.hidden) { sessMenu.hidden = true; return; }
+  claudeMenu.hidden = true; moreMenu.hidden = true; closePicker();
+  renderSessMenu();
+  sessMenu.hidden = false;
+  sessMenu.querySelector<HTMLElement>("textarea:not([disabled]), button:not([disabled])")?.focus();
+}
+
+function renderSessMenu() {
+  const name = activeSession;
+  if (!name) return;
+  const si = sessInfo.get(name);
+  const live = !!liveRun && !liveRun.done && liveRun.session === name;
+  const compactingNow = live && liveRun!.mode === "compact";
+  const canCompact = !!si?.started && !si.compactQueued && !compactingNow;
+  const old = sessMenu.querySelector<HTMLTextAreaElement>(".sess-focus");
+  const focus = h("textarea", { class: "input sess-focus", rows: 2, placeholder: "What must the summary keep? (optional)", "aria-label": "What the summary must keep", disabled: !canCompact }) as HTMLTextAreaElement;
+  if (old) focus.value = old.value;
+  const doCompact = () => { if (!canCompact) return; post({ type: "compact", session: name, focus: focus.value.trim() }); sessMenu.hidden = true; };
+  focus.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); doCompact(); }
+    if (e.key === "Escape") { e.stopPropagation(); sessMenu.hidden = true; sessBtn.focus(); }
+  });
+  const auto = h("input", { type: "checkbox", checked: autoCompact, onchange: (e: Event) => post({ type: "setAutoCompact", on: (e.target as HTMLInputElement).checked }) });
+  sessMenu.replaceChildren(
+    h("div", { class: "sm-head" }, h("span", { class: "sm-title" }, `Session ${name}`), h("span", { class: "sm-ctx" }, ctxLong(si))),
+    h("div", { class: "sm-section" },
+      h("div", { class: "sm-label" }, "Compact"),
+      h("div", { class: "sm-hint" }, live && !compactingNow ? "Claude is working. The compaction runs as soon as it finishes this step." : "Claude replaces the conversation with a summary and keeps working in it."),
+      focus,
+      h("button", { class: "btn btn-primary btn-small", disabled: !canCompact, onclick: doCompact },
+        si?.compactQueued ? "Compaction queued" : compactingNow ? "Compacting…" : live ? "Compact after this step" : "Compact now")),
+    h("div", { class: "sm-section" },
+      h("div", { class: "sm-label" }, "Fresh session"),
+      h("div", { class: "sm-hint" }, live ? "Available when Claude finishes in this session." : `Claude starts over and forgets this session's earlier work. ${LN} is told, so its next brief is complete.`),
+      h("button", { class: "btn btn-ghost btn-small sm-fresh", disabled: live || !si?.started, onclick: () => { post({ type: "freshSession", session: name }); sessMenu.hidden = true; } }, icon("plus"), "Start a fresh session")),
+    h("label", { class: "sm-toggle" }, auto, h("span", null, "Let Claude compact on its own when its context is nearly full")),
+  );
+}
+
 const claudeBody = h("div", { class: "claude-body" });
 const claudeEmpty = h("div", { class: "empty empty-claude" },
   h("div", { class: "empty-mark" }, h("span", { class: "mark-k" }), h("span", { class: "mark-c" })),
@@ -162,7 +237,7 @@ const interjectInput = h("textarea", { class: "input", rows: 1, placeholder: "Me
 const interjectBtn = h("button", { class: "send send-claude", title: "Send to Claude (Enter)", "aria-label": "Send to Claude", onclick: () => submitInterject() }, icon("send"));
 const interject = h("div", { class: "interject", hidden: true }, h("div", { class: "composer composer-claude" }, interjectInput, interjectBtn));
 const claudePane = h("section", { class: "pane pane-claude", "aria-label": "Claude Code" },
-  h("div", { class: "tabbar" }, tabs, h("div", { class: "menu-wrap" }, claudeModelBtn, claudeMenu), resumeBtn), claudeBody, interject);
+  h("div", { class: "tabbar" }, tabs, sessCtl, h("div", { class: "menu-wrap" }, claudeModelBtn, claudeMenu), resumeBtn), claudeBody, interject);
 
 const splitter = h("div", { class: "splitter", role: "separator", "aria-orientation": "vertical", tabindex: 0, title: "Drag to resize" });
 const split = h("main", { class: "split" }, leadPane, splitter, claudePane);
@@ -260,9 +335,10 @@ function refreshChrome() {
   input.placeholder = !info?.hasKey ? "Save your OpenRouter key first" : busy ? `${LN} is working. Esc stops it.` : "What should we do? Write it in your own words…";
   modelBtn.disabled = busy;
   const claudeLive = !!liveRun && !liveRun.done;
-  interject.hidden = !(claudeLive && liveRun!.session === activeSession);
+  interject.hidden = !(claudeLive && liveRun!.session === activeSession && liveRun!.mode !== "compact");
   segClaudeDot.hidden = !claudeLive;
   resumeBtn.hidden = !activeSession;
+  refreshSessCtl();
   costText.textContent = totals.lead || totals.claude ? `${LN} ${usd(totals.lead)}  Claude ${usd(totals.claude)}` : "";
   if (!busy && !waitingAnswer) setStatus("idle", "Ready");
 }
@@ -390,7 +466,8 @@ function ensureSession(name: string): SessionView {
   if (s) return s;
   claudeEmpty.remove();
   const tab = h("button", { class: "tab", role: "tab", onclick: () => selectSession(name) }, h("span", { class: "live-dot", hidden: true }), h("span", { class: "tab-name" }, name)) as HTMLButtonElement;
-  const feed = h("div", { class: "feed claude-feed", role: "log", "aria-label": `Claude session ${name}`, hidden: true });
+  const feed = h("div", { class: "feed claude-feed", role: "log", "aria-label": `Claude session ${name}`, hidden: true },
+    h("div", { class: "feed-intro" }, "Earlier work in this session isn't shown here; Claude still remembers it."));
   s = { name, tab, feed, runs: [] };
   sessions.set(name, s);
   tabs.append(tab);
@@ -523,18 +600,20 @@ function toolResult(run: RunView, id: string, isError: boolean, text: string) {
   }
 }
 
-function startRun(session: string, mode: "ask" | "implement", prompt: string, ts: number) {
+function startRun(session: string, mode: "ask" | "implement" | "compact", prompt: string, ts: number, by?: "user" | "lead") {
   const s = ensureSession(session);
   const id = `run-${ts}-${Math.random().toString(36).slice(2, 7)}`;
   const timer = h("span", { class: "run-timer", dataset: { start: String(ts) } }, replaying ? "" : "0 s");
   const promptPre = h("pre", { class: "brief-text" }, prompt.trim());
   const more = h("button", { class: "brief-more", hidden: true, onclick: () => { brief.classList.toggle("expanded"); more.textContent = brief.classList.contains("expanded") ? "Collapse" : "Show full brief"; } }, "Show full brief");
-  const brief = h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: "who who-lead" }, LN), h("span", { class: "brief-to" }, "hands off to Claude")), promptPre, more);
+  const brief = mode === "compact"
+    ? h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: `who ${by === "lead" ? "who-lead" : "who-you"}` }, by === "lead" ? LN : "You"), h("span", { class: "brief-to" }, "compact this session")), promptPre, more)
+    : h("div", { class: "brief" }, h("div", { class: "brief-head" }, h("span", { class: "who who-lead" }, LN), h("span", { class: "brief-to" }, "hands off to Claude")), promptPre, more);
   const stream = h("div", { class: "stream" });
   const foot = h("div", { class: "run-foot" });
   const el = h("article", { class: `run run-${mode}`, id },
     h("div", { class: "run-head" },
-      h("span", { class: `mode mode-${mode}` }, mode === "ask" ? "Consult, read-only" : "Implementation"),
+      h("span", { class: `mode mode-${mode}` }, mode === "ask" ? "Consult, read-only" : mode === "compact" ? "Compaction" : "Implementation"),
       h("span", { class: "run-time" }, clock(ts)),
       timer),
     brief, stream, foot);
@@ -549,16 +628,25 @@ function startRun(session: string, mode: "ask" | "implement", prompt: string, ts
   const run: RunView = { id, session, mode, start: ts, el, stream, foot, timer, tools: new Map(), handoff, done: false };
   s.runs.push(run);
   liveRun = run;
+  s.feed.querySelector(".feed-intro")?.remove();
   stick(s.feed, () => s.feed.append(el));
   requestAnimationFrame(() => { if (promptPre.scrollHeight > promptPre.clientHeight + 4) more.hidden = false; });
-  feedAppend(handoff);
+  if (mode !== "compact") feedAppend(handoff); // a compaction is session upkeep, not a handoff
   s.tab.querySelector(".live-dot")!.removeAttribute("hidden");
   if (!replaying) {
     selectSession(session);
     handoff.classList.add("sent");
-    setStatus("claude", `Claude is working in session ${session}`);
+    setStatus("claude", mode === "compact" ? `Claude is compacting session ${session}` : `Claude is working in session ${session}`);
   }
   refreshChrome();
+}
+
+/** A full-width marker in a session's feed: compaction, fresh start. */
+function sessionMark(session: string, ic: string, text: string, sub?: string) {
+  const s = ensureSession(session);
+  s.feed.querySelector(".feed-intro")?.remove();
+  const target = s.runs.at(-1) && !s.runs.at(-1)!.done ? s.runs.at(-1)!.stream : s.feed;
+  stick(s.feed, () => target.append(h("div", { class: "sess-mark" }, h("span", { class: "sess-mark-line" }), h("span", { class: "sess-mark-text" }, icon(ic), text, sub ? h("span", { class: "sess-mark-sub" }, sub) : null), h("span", { class: "sess-mark-line" }))));
 }
 
 function focusRun(run: RunView) {
@@ -634,7 +722,11 @@ function handle(e: UIEvent) {
       break;
     case "claude-start":
       stopThinking();
-      startRun(e.session, e.mode, e.prompt, e.ts);
+      startRun(e.session, e.mode, e.prompt, e.ts, e.by);
+      break;
+    case "session-fresh":
+      sessionMark(e.session, "plus", "Fresh Claude conversation from here", e.by === "lead" ? `${LN} started it, as you asked. Claude doesn't remember anything above.` : "Claude doesn't remember anything above.");
+      if (!replaying) feedAppend(h("div", { class: "notice" }, icon("info"), h("span", null, `Session ${e.session} starts a fresh Claude conversation on its next run.`)));
       break;
     case "claude-event": {
       const s = ensureSession(e.session);
@@ -650,7 +742,18 @@ function handle(e: UIEvent) {
       } else if (ev.kind === "user") {
         stick(s.feed, () => run.stream.append(h("div", { class: "interjection" }, h("span", { class: "who who-you" }, "You"), h("span", null, ev.text))));
       } else if (ev.kind === "init" && ev.model) {
-        run.el.querySelector(".run-head")!.append(h("span", { class: "run-model" }, ev.model));
+        if (!run.el.querySelector(".run-model")) run.el.querySelector(".run-head")!.append(h("span", { class: "run-model" }, ev.model));
+      } else if (ev.kind === "compacting") {
+        if (!run.el.dataset.compacting) { // Claude repeats this status while it works
+          run.el.dataset.compacting = "1";
+          if (run.mode !== "compact") sessionMark(e.session, "notes", "Claude is compacting the conversation…", "Its context was nearly full. This can take a minute.");
+        }
+      } else if (ev.kind === "compacted") {
+        sessionMark(e.session, "notes", ev.trigger === "manual" ? "Compacted" : "Claude compacted on its own", `${ktokRound(ev.pre)} → ${ktokRound(ev.post)} tokens. Claude keeps a summary of what came before.`);
+        if (!replaying && run.mode !== "compact") showToast(`Claude compacted session ${e.session}`);
+      } else if (ev.kind === "context") {
+        const si = sessInfo.get(e.session);
+        if (si) { si.contextTokens = ev.tokens; if (ev.window) si.contextWindow = ev.window; si.started = true; if (e.session === activeSession) refreshSessCtl(); }
       }
       break;
     }
@@ -843,11 +946,20 @@ function markInterrupted() {
   for (const s of sessions.values()) for (const r of s.runs) if (!r.done) endRun(r, true, true, 0, "", r.start);
 }
 
+function applySessions(list: SessionInfo[]) {
+  sessInfo.clear();
+  for (const s of list) sessInfo.set(s.name, s);
+  // sessions with a Claude conversation get a tab even when this transcript has no runs for them
+  for (const s of list) if (s.started) ensureSession(s.name);
+  refreshSessCtl();
+}
+
 function applyInit(d: InitData) {
   info = d;
   busy = false;
   sessions.clear(); tabs.replaceChildren(); claudeBody.replaceChildren(claudeEmpty);
   activeSession = null; liveRun = null; totals.lead = 0; totals.claude = 0;
+  autoCompact = d.autoCompact;
   repoName.textContent = d.repoName;
   repoName.title = d.repo;
   branchName.textContent = d.branch || "no branch";
@@ -856,6 +968,7 @@ function applyInit(d: InitData) {
   replaying = true;
   for (const e of d.transcript) handle(e);
   replaying = false;
+  applySessions(d.sessions ?? []);
   if (!d.busy) { markInterrupted(); waitingAnswer = false; }
   for (const a of asks.values()) if (!a.classList.contains("answered") && !d.busy) a.querySelector(".ask-actions")?.replaceWith(h("div", { class: "ask-answer" }, "Question expired"));
   busy = d.busy;
@@ -899,9 +1012,17 @@ window.addEventListener("message", (ev: MessageEvent<ToWebview>) => {
       models = m.models; modelsError = m.error ?? "";
       if (!picker.hidden) renderPicker();
       break;
-    case "config":
+    case "config": {
+      const autoChanged = m.autoCompact !== autoCompact;
+      autoCompact = m.autoCompact;
       applyConfig(m.model, m.claudeModel);
-      showToast(`Lead: ${shortModel(m.model)} · Claude Code: ${claudeLabel(m.claudeModel)}`);
+      showToast(autoChanged
+        ? (autoCompact ? "Claude may compact on its own again" : "Auto-compact off: Claude compacts only when you say so")
+        : `Lead: ${shortModel(m.model)} · Claude Code: ${claudeLabel(m.claudeModel)}`);
+      break;
+    }
+    case "sessions":
+      applySessions(m.sessions);
       break;
   }
 });

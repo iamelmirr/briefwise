@@ -37,7 +37,9 @@ When you send a message, Briefwise starts a task:
 | `git` | Read-only git: `status`, `diff`, `log`, `show`, `branch`. Flags such as `--output`, `--exec`, `-d`, `-D`, `-m`, `-c` are refused. |
 | `update_notes` | Overwrites `PROJECT`, `TASKS`, `DECISIONS` or `PRIVATE`. There is no tool for `RULES.md`. |
 | `new_session` | Registers a named Claude session for a workstream. |
-| `list_sessions` | Lists Claude sessions. |
+| `list_sessions` | Lists Claude sessions with how full each one's context is. |
+| `compact_session` | Compacts a Claude session (Claude's own `/compact`, optionally with what to keep). Only when you ask. |
+| `fresh_session` | Makes a session start a new Claude conversation on its next run. Only when you ask. |
 | `ask_claude` | Consults Claude, read-only. Counts toward `maxAskRounds`. |
 | `implement` | Has Claude make changes. |
 | `escalate_to_user` | Stops and asks you. Used for approvals and real ambiguity. |
@@ -106,6 +108,16 @@ The mode line is a prompt. The actual permissions come from the flags above, whi
 The lead organizes Claude's work in named sessions, one per workstream (`cart`, `auth`, `billing-api`). Names, purposes and Claude session ids are stored in `sessions.json`. Reusing a session name resumes the Claude conversation with `--resume`, so Claude remembers what it did. If the lead names a session that doesn't exist yet, it is created on the fly (`main` when no name is given). If Claude no longer has the conversation, Briefwise starts a fresh one and tells Claude that the earlier context was lost.
 
 In VS Code each session is a tab in the right pane. **Resume in terminal** opens it with `claude --resume <id>` so you can continue by hand.
+
+Briefwise records how full each session's context is after every Claude call (from Claude's usage report) and the model's context window, and shows both to you and to the lead.
+
+You decide when a session is compacted or started fresh:
+
+- **Compact** sends Claude Code's own `/compact` (with your note on what to keep) into that session's conversation. Only one Claude process runs at a time, so a compaction requested while Claude works is queued and runs right after that run ends. The lead is told at its next step.
+- **Fresh session** forgets the session's Claude id (the last ten are kept in `sessions.json` as `previousIds`), so its next run starts a new conversation without `--resume`. A session that Claude is working in can't be reset until the run ends. When you do this during a task, the lead is told to make its next brief self-contained.
+- **Auto-compact** is Claude Code's own compaction near the context limit. `claude.autoCompact: false` sets `DISABLE_AUTO_COMPACT=1` for every Claude run, so it only compacts when asked; manual `/compact` keeps working.
+
+The lead has `compact_session` and `fresh_session` tools, and its instructions allow them only when you ask, now or as a standing instruction in your rules or notes.
 
 ### Interjection
 

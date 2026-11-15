@@ -50,6 +50,7 @@
         if (q.get("top")) setTimeout(() => document.querySelectorAll(".claude-feed").forEach((f) => (f.scrollTop = 0)), 300);
         if (q.get("picker")) setTimeout(() => document.querySelector(".model-btn").click(), 200);
         if (q.get("claudemenu")) setTimeout(() => document.querySelector(".cm-btn").click(), 200);
+        if (q.get("session")) setTimeout(() => document.querySelector(".sess-ctl .btn-icon").click(), 200);
       }
     },
   });

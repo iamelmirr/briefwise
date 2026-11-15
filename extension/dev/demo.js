@@ -94,10 +94,14 @@ export function rateLimit({ limit, windowMs }: { limit: number; windowMs: number
   push(1500, { type: "task-end", report: "Done. `/api/orders` is now limited to 30 requests per minute per user; above that it returns **429** with `Retry-After`.\n\n- New middleware: `src/middleware/rateLimit.ts` (in-memory sliding window, no new dependency)\n- Applied only to the orders routes; other routes are untouched\n- Tests: 6/6 pass\n\nOpen: if you ever run more than one instance, the limit should move to Redis.", streamed: false, leadUsd: 0.011, claudeUsd: 0.298 });
   push(200, { type: "guard", issues: ["dependencies: package.json"] });
 
-  const base = { repo: REPO, repoName: "shop-api", branch: "feat/rate-limit", model: "moonshotai/kimi-k3.1-pro", claudeModel: null, contextLimit: 40000, claudeBin: "C:\\Users\\dev\\.local\\bin\\claude.exe", claudeFound: true };
+  const base = { repo: REPO, repoName: "shop-api", branch: "feat/rate-limit", model: "moonshotai/kimi-k3.1-pro", claudeModel: null, autoCompact: true, contextLimit: 40000, claudeBin: "C:\\Users\\dev\\.local\\bin\\claude.exe", claudeFound: true };
   window.demoInit = (state) => ({
     ...base,
     hasKey: state !== "nokey",
+    sessions: state === "nokey" || state === "empty" ? [] : [
+      { name: "orders", purpose: "Rate limiting for the orders API", started: true, contextTokens: 118400, contextWindow: 200000, live: state === "live", compactQueued: false },
+      { name: "auth", purpose: "Login and sessions", started: true, contextTokens: 61200, contextWindow: 200000, live: false, compactQueued: false },
+    ],
     busy: state === "live",
     transcript: state === "live" ? live : state === "done" ? done.slice(0, -1) : state === "guard" ? done : [],
   });

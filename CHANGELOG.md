@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is based on 
 
 ## Unreleased
 
+### Added
+
+- Session control. A meter next to the session tabs shows how full each Claude session's context is. Its options let you compact the session (with a note on what to keep), start a fresh Claude conversation in it, or stop Claude from compacting on its own (`claude.autoCompact`). A compaction requested while Claude works runs right after the current step. In the CLI: `/sessions`, `/compact`, `/fresh`, `/autocompact`.
+- The lead can compact a session or start it fresh when you ask (`compact_session`, `fresh_session`), sees each session's context size, and mentions sessions over 60% full in its report.
+
 ### Changed
 
 - Messages you send straight to Claude while it works now reach the lead together with Claude's report, marked as your decisions, so the lead's review doesn't undo them.

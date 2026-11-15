@@ -97,6 +97,18 @@ A footer shows the total time and the cost of the lead and of Claude for this ta
 - **Questions:** when the lead needs approval (a new dependency, a schema change, a deletion, deployment) it shows a card with **Approve**, **Decline**, or a box for your own answer.
 - **Resume in terminal:** opens the selected session with `claude --resume <id>` in a VS Code terminal, after Claude has finished. This is plain Claude Code with your normal settings, not Briefwise's guardrails.
 
+### Managing Claude's sessions
+
+Next to the session tabs, a meter shows how full the selected session's context is (for example `118k / 200k`). Click it, or the `⋯` next to it, for the session options:
+
+- **Compact:** Claude replaces the conversation with a summary and keeps working in the same session. You can say what the summary must keep, for example "the API decisions and the open TODOs". If Claude is working right now, the compaction is queued and runs as soon as it finishes the current step.
+- **Start a fresh session:** the next run in this session starts a new Claude conversation that remembers nothing from before. The old conversation is kept in Claude Code's history. The lead is told, so its next brief for that session is complete.
+- **Let Claude compact on its own:** on by default. Turn it off and Claude compacts only when you ask (Briefwise sets `DISABLE_AUTO_COMPACT` for Claude). With it off, a session that fills up completely ends its run with an error, so keep an eye on the meter.
+
+You can also leave this to the lead: tell it "compact the cart session" or "start a fresh Claude session after each feature" (put standing instructions like that in `RULES.md`). The lead compacts or starts fresh sessions only when you ask; when a session it uses is over 60% full, it says so in its report.
+
+When a compaction happens, the session's feed shows a marker with the size before and after (for example `41k → 2k tokens`), including when Claude compacted on its own.
+
 The conversation survives reloads. **New chat** (or **Briefwise: New conversation**) clears it, and keeps your notes and Claude sessions.
 
 ## First run in the terminal
@@ -171,7 +183,10 @@ Commands at the prompt:
 | `/new` | Start a new conversation. Notes and sessions are kept. |
 | `/model [id]` | Show the lead model, or switch to an OpenRouter model id. Saved in `config.json`. |
 | `/claude [opus\|sonnet\|haiku\|default]` | Show or set the Claude Code model. `default` uses your Claude Code default. |
-| `/sessions` | List named Claude sessions and their ids. |
+| `/sessions` | List Claude sessions with how full each one's context is. |
+| `/compact [session] [what to keep]` | Compact a session (the last used one if you name none). Works while a task runs: it is queued until Claude finishes the current step. |
+| `/fresh [session]` | The session's next run starts a new Claude conversation. The lead is told. |
+| `/autocompact [on\|off]` | Show or set whether Claude may compact on its own. Saved in `config.json`. |
 | `/rules` | Print `RULES.md`. |
 | `/private` | Print `PRIVATE.md`. |
 | `/exit` | Quit. |

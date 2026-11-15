@@ -159,7 +159,10 @@ describe("startClaude with the fake CLI (.mjs runs via node)", () => {
       onEvent: (e) => events.push(e),
     });
     const res = await run.done;
-    assert.deepEqual(events.map((e) => e.kind), ["init", "tool", "tool_result", "text"]);
+    assert.deepEqual(events.filter((e) => e.kind !== "context").map((e) => e.kind), ["init", "tool", "tool_result", "text"]);
+    const ctx = events.filter((e) => e.kind === "context") as Extract<ClaudeEvent, { kind: "context" }>[];
+    assert.deepEqual(ctx.map((c) => [c.tokens, c.window]), [[40010, undefined], [40010, 200000]], "context from usage, window from the result");
+    assert.deepEqual([res.contextTokens, res.contextWindow, res.compacted], [40010, 200000, undefined]);
     const init = events[0] as Extract<ClaudeEvent, { kind: "init" }>;
     assert.match(init.sessionId, /^fake-session-/);
     assert.equal(res.sessionId, init.sessionId);

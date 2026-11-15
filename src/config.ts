@@ -24,6 +24,7 @@ export type Config = {
     effort: string | null;
     maxBudgetUsdPerCall: number | null;
     reportMaxChars: number;                 // how much of Claude's final reply the lead gets
+    autoCompact: boolean;                   // false: Claude never compacts on its own; you compact by hand
     implementAllow: string[];               // extra tools Claude may use when implementing
     denyRead: string[];                     // paths neither Claude nor the lead may read
   };
@@ -46,6 +47,7 @@ export const DEFAULT_CONFIG: Config = {
     effort: null,
     maxBudgetUsdPerCall: null,
     reportMaxChars: 6_000,
+    autoCompact: true,
     implementAllow: ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
     denyRead: [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"],
   },

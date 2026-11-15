@@ -14,6 +14,7 @@
     "effort": null,
     "maxBudgetUsdPerCall": null,
     "reportMaxChars": 6000,
+    "autoCompact": true,
     "implementAllow": ["Bash(npm test:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)"],
     "denyRead": [".env", ".env.*", "**/*.pem", "**/*.key", "secrets/**"]
   },

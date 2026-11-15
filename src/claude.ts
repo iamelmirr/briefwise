@@ -14,9 +14,18 @@ export type ClaudeEvent =
   | { kind: "text"; text: string }
   | { kind: "user"; text: string } // a message the user interjected, acknowledged by Claude
   | { kind: "tool"; id: string; name: string; input: any }
-  | { kind: "tool_result"; id: string; isError: boolean; text: string };
+  | { kind: "tool_result"; id: string; isError: boolean; text: string }
+  /** How full the session's context is: tokens in the last model call, and the model's window once known. */
+  | { kind: "context"; tokens: number; window?: number }
+  | { kind: "compacting" }
+  /** Claude compacted the conversation: by hand (/compact) or automatically near the limit. */
+  | { kind: "compacted"; trigger: string; pre: number; post: number };
 
-export type ClaudeResult = { text: string; isError: boolean; costUsd: number; sessionId?: string; stopped?: boolean };
+export type ClaudeResult = {
+  text: string; isError: boolean; costUsd: number; sessionId?: string; stopped?: boolean;
+  contextTokens?: number; contextWindow?: number;
+  compacted?: { trigger: string; pre: number; post: number };
+};
 
 export type ClaudeRun = {
   done: Promise<ClaudeResult>;
@@ -152,7 +161,12 @@ function resultText(content: unknown): string {
   return "";
 }
 
-export function startClaude(o: { bin: string; repo: string; args: string[]; prompt: string; onEvent(e: ClaudeEvent): void }): ClaudeRun {
+/** Environment for a Claude run. autoCompact false sets DISABLE_AUTO_COMPACT (manual /compact still works). */
+export function claudeEnv(cfg: Config): Record<string, string> {
+  return cfg.claude.autoCompact === false ? { DISABLE_AUTO_COMPACT: "1" } : {};
+}
+
+export function startClaude(o: { bin: string; repo: string; args: string[]; prompt: string; env?: Record<string, string>; onEvent(e: ClaudeEvent): void }): ClaudeRun {
   // Test/dev hook: a "claude" that is a JS file (e.g. test/fixtures/fake-claude.mjs) runs with the current Node,
   // so claude.path can point at a script portably (Windows cannot spawn a .mjs directly).
   const viaNode = /\.[cm]?js$/i.test(o.bin);
@@ -161,13 +175,16 @@ export function startClaude(o: { bin: string; repo: string; args: string[]; prom
   const child = spawn(viaNode ? process.execPath : o.bin, viaNode ? [o.bin, ...o.args] : o.args, {
     cwd: o.repo, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32",
     // inside VS Code, process.execPath is the Electron binary; this makes it behave as plain Node
-    ...(viaNode ? { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } } : {}),
+    env: { ...process.env, ...(viaNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}), ...o.env },
   });
   // sent: messages written to stdin; acked: messages Claude replayed back (it may fold an interjection into the
   // running turn, so there is not always one result per message). Close stdin once a turn ends with all acked.
   let sent = 0, acked = 0, buf = "", err = "", cost = 0, stopped = false;
   let sessionId: string | undefined;
   let last: any = null;
+  let model: string | undefined;
+  let ctxTokens: number | undefined, ctxWindow: number | undefined;
+  let compacted: ClaudeResult["compacted"];
 
   const send = (text: string): boolean => {
     if (child.stdin.writableEnded || child.exitCode !== null) return false;
@@ -179,8 +196,21 @@ export function startClaude(o: { bin: string; repo: string; args: string[]; prom
   const handle = (e: any) => {
     if (e.session_id) sessionId = e.session_id;
     if (e.type === "system" && e.subtype === "init") {
+      model = e.model;
       o.onEvent({ kind: "init", sessionId: e.session_id, model: e.model });
+    } else if (e.type === "system" && e.subtype === "status" && e.status === "compacting") {
+      o.onEvent({ kind: "compacting" });
+    } else if (e.type === "system" && e.subtype === "compact_boundary") {
+      const m = e.compact_metadata ?? {};
+      compacted = { trigger: String(m.trigger ?? "auto"), pre: Number(m.pre_tokens ?? 0), post: Number(m.post_tokens ?? 0) };
+      if (compacted.post) ctxTokens = compacted.post;
+      o.onEvent({ kind: "compacted", ...compacted });
     } else if (e.type === "assistant") {
+      const u = e.message?.usage;
+      if (u && !e.parent_tool_use_id) { // the main conversation, not a subagent's
+        const tokens = Number(u.input_tokens ?? 0) + Number(u.cache_creation_input_tokens ?? 0) + Number(u.cache_read_input_tokens ?? 0) + Number(u.output_tokens ?? 0);
+        if (tokens && tokens !== ctxTokens) { ctxTokens = tokens; o.onEvent({ kind: "context", tokens, window: ctxWindow }); }
+      }
       for (const b of e.message?.content ?? []) {
         if (b.type === "text" && b.text?.trim()) o.onEvent({ kind: "text", text: b.text });
         else if (b.type === "tool_use") o.onEvent({ kind: "tool", id: b.id, name: b.name, input: b.input ?? {} });
@@ -198,6 +228,9 @@ export function startClaude(o: { bin: string; repo: string; args: string[]; prom
     } else if (e.type === "result") {
       last = e;
       cost = Math.max(cost, Number(e.total_cost_usd || 0));
+      const usage: Record<string, any> = e.modelUsage ?? {};
+      const win = Number((model && usage[model]?.contextWindow) || Math.max(0, ...Object.values(usage).map((u: any) => Number(u?.contextWindow) || 0)));
+      if (win) { ctxWindow = win; if (ctxTokens) o.onEvent({ kind: "context", tokens: ctxTokens, window: win }); }
       // nothing more queued → let the process exit (acked === 0: this claude build does not replay; don't wait)
       if (acked >= sent || acked === 0) child.stdin.end();
     }
@@ -222,9 +255,10 @@ export function startClaude(o: { bin: string; repo: string; args: string[]; prom
       isError: true, costUsd: 0,
     }));
     child.on("close", (code) => {
-      if (stopped) return resolve({ text: "STOPPED: the user stopped this Claude run.", isError: true, costUsd: cost, sessionId, stopped: true });
-      if (last) return resolve({ text: String(last.result ?? last.subtype ?? "(no result)"), isError: !!last.is_error, costUsd: cost, sessionId });
-      resolve({ text: `ERROR: claude exited with code ${code}\n${(err || buf).slice(-4000)}`, isError: true, costUsd: cost, sessionId });
+      const ctx = { contextTokens: ctxTokens, contextWindow: ctxWindow, compacted };
+      if (stopped) return resolve({ text: "STOPPED: the user stopped this Claude run.", isError: true, costUsd: cost, sessionId, stopped: true, ...ctx });
+      if (last) return resolve({ text: String(last.result ?? last.subtype ?? "(no result)"), isError: !!last.is_error, costUsd: cost, sessionId, ...ctx });
+      resolve({ text: `ERROR: claude exited with code ${code}\n${(err || buf).slice(-4000)}`, isError: true, costUsd: cost, sessionId, ...ctx });
     });
   });
 

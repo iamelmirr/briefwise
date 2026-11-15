@@ -8,8 +8,12 @@
 //   - if the message contains [fake:hang]: stops there and waits (for stop() tests)
 //   - if the message contains [fake:edit <path>] and the mode is acceptEdits: emits an Edit tool_use,
 //     really appends a line to <path> (relative to cwd), then emits the tool_result
-//   - emits a final assistant text ending with "REPORT: …" and a result event with total_cost_usd
+//   - if the message starts with /compact: behaves like Claude Code's compaction (status, compact_boundary
+//     with pre/post tokens, a replayed "Compacted" note, an empty result) and does nothing else
+//   - emits a final assistant text ending with "REPORT: …" (with usage: the context grows 1000 tokens per turn,
+//     from 40000) and a result event with total_cost_usd and modelUsage.contextWindow 200000
 // It exits when stdin ends.
+// FAKE_CLAUDE_ENV_LOG: if set, the start record also carries DISABLE_AUTO_COMPACT.
 //
 // If FAKE_CLAUDE_LOG is set, it appends JSON lines there: {event:"start", pid, argv, cwd} and {event:"message", pid, text}.
 
@@ -33,7 +37,7 @@ const log = (rec) => {
 };
 const out = (e) => process.stdout.write(JSON.stringify(e) + "\n");
 
-log({ event: "start", argv, cwd: process.cwd() });
+log({ event: "start", argv, cwd: process.cwd(), disableAutoCompact: process.env.DISABLE_AUTO_COMPACT ?? null });
 
 let turn = 0;
 const rl = readline.createInterface({ input: process.stdin });
@@ -47,6 +51,16 @@ rl.on("line", (line) => {
   log({ event: "message", text });
   turn++;
 
+  if (text.startsWith("/compact")) {
+    out({ type: "system", subtype: "status", status: "compacting", session_id: sessionId });
+    out({ type: "system", subtype: "status", status: null, compact_result: "success", session_id: sessionId });
+    out({ type: "system", subtype: "init", session_id: sessionId, model, cwd: process.cwd(), tools: ["Read", "Edit"] });
+    out({ type: "system", subtype: "compact_boundary", session_id: sessionId, compact_metadata: { trigger: "manual", pre_tokens: 41000, post_tokens: 1600 } });
+    out({ type: "user", session_id: sessionId, isSynthetic: true, message: { role: "user", content: "This session is being continued from a previous conversation…" } });
+    if (replay) out({ type: "user", session_id: sessionId, isReplay: true, message: { role: "user", content: "<local-command-stdout>Compacted </local-command-stdout>" } });
+    out({ type: "result", subtype: "success", is_error: false, session_id: sessionId, result: "", total_cost_usd: 0.002, num_turns: 0 });
+    return;
+  }
   if (replay) out({ type: "user", message: msg.message, session_id: sessionId, isReplay: true });
   out({ type: "system", subtype: "init", session_id: sessionId, model, cwd: process.cwd(), tools: ["Read", "Edit"] });
   if (text.includes("[fake:hang]")) return; // wait for stop()
@@ -72,10 +86,12 @@ rl.on("line", (line) => {
   }
 
   const report = `REPORT: ${changed ? `edited ${changed}` : "investigated, no changes"} (mode ${mode}).`;
-  out({ type: "assistant", session_id: sessionId, message: { role: "assistant", content: [{ type: "text", text: `All done.\n\n${report}` }] } });
+  const usage = { input_tokens: 2, cache_creation_input_tokens: 1000, cache_read_input_tokens: 39000 + turn * 1000 - 1000, output_tokens: 8 };
+  out({ type: "assistant", session_id: sessionId, message: { role: "assistant", usage, content: [{ type: "text", text: `All done.\n\n${report}` }] } });
   out({
     type: "result", subtype: "success", is_error: false, session_id: sessionId,
     result: `All done.\n\n${report}`, total_cost_usd: 0.0125, num_turns: 1,
+    modelUsage: { [model]: { contextWindow: 200000 } },
   });
 });
 rl.on("close", () => process.exit(0));

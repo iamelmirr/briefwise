@@ -1,9 +1,11 @@
 // Messages between the extension host and the webview.
 
-import type { LeadEvent } from "../../src/lead.ts";
+import type { LeadEvent, SessionInfo } from "../../src/lead.ts";
+
+export type { SessionInfo };
 
 export type UIEvent = (
-  | LeadEvent
+  | Exclude<LeadEvent, { type: "sessions" }>
   | { type: "user"; text: string }
   | { type: "ask"; id: string; question: string }
   | { type: "answer"; id: string; text: string | null }
@@ -16,6 +18,8 @@ export type InitData = {
   branch: string;
   model: string;
   claudeModel: string | null;
+  autoCompact: boolean;
+  sessions: SessionInfo[];
   contextLimit: number;
   hasKey: boolean;
   claudeBin: string;
@@ -43,7 +47,8 @@ export type ToWebview =
   | { type: "reset" }
   | { type: "toast"; text: string }
   | { type: "models"; models: ModelInfo[]; error?: string }
-  | { type: "config"; model: string; claudeModel: string | null };
+  | { type: "config"; model: string; claudeModel: string | null; autoCompact: boolean }
+  | { type: "sessions"; sessions: SessionInfo[] };
 
 export type NoteName = "RULES" | "PRIVATE" | "PROJECT" | "TASKS" | "DECISIONS" | "config" | "log";
 
@@ -62,4 +67,7 @@ export type FromWebview =
   | { type: "openExternal"; url: string }
   | { type: "listModels" }
   | { type: "setModel"; id: string }
-  | { type: "setClaudeModel"; model: string | null };
+  | { type: "setClaudeModel"; model: string | null }
+  | { type: "compact"; session: string; focus: string }
+  | { type: "freshSession"; session: string }
+  | { type: "setAutoCompact"; on: boolean };

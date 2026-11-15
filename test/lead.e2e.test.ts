@@ -59,6 +59,7 @@ function setup(name: string, files: Record<string, string> = {}, config: Record<
 function shape(events: LeadEvent[]): string[] {
   const out: string[] = [];
   for (const e of events) {
+    if (e.type === "sessions" || (e.type === "claude-event" && e.event.kind === "context")) continue; // bookkeeping, tested separately
     const s = e.type === "claude-event" ? `claude-event:${e.event.kind}` : e.type === "lead-tool" ? `lead-tool:${e.name}` : e.type;
     if ((e.type === "lead-text" || e.type === "lead-reasoning") && out[out.length - 1] === s) continue;
     out.push(s);

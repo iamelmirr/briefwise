@@ -104,6 +104,7 @@ export class BriefwisePanel {
   // ───────────── lead → webview ─────────────
 
   private onLead(e: LeadEvent) {
+    if (e.type === "sessions") { this.post({ type: "sessions", sessions: e.sessions }); return; } // live state, not transcript
     this.push({ ...e, ts: Date.now() } as UIEvent);
   }
 
@@ -155,6 +156,8 @@ export class BriefwisePanel {
       branch: this.lead.branch(),
       model: this.lead.cfg.model,
       claudeModel: this.lead.cfg.claude.model,
+      autoCompact: this.lead.cfg.claude.autoCompact !== false,
+      sessions: this.lead.sessionInfo(),
       contextLimit: this.lead.cfg.context.hardTokens,
       hasKey: !!this.apiKey,
       claudeBin: this.lead.claudeBin,
@@ -213,11 +216,37 @@ export class BriefwisePanel {
           if (m.type === "setModel") this.lead.setModel(m.id);
           else this.lead.setClaudeModel(m.model);
         } catch (e: any) { void vscode.window.showErrorMessage(String(e?.message ?? e)); }
-        this.post({ type: "config", model: this.lead.cfg.model, claudeModel: this.lead.cfg.claude.model });
+        this.postConfig();
+        break;
+      case "setAutoCompact": // applies from the next Claude start, so it can change mid-task
+        try { this.lead.setAutoCompact(m.on); } catch (e: any) { void vscode.window.showErrorMessage(String(e?.message ?? e)); }
+        this.postConfig();
+        break;
+      case "compact": await this.compact(m.session, m.focus); break;
+      case "freshSession":
+        try { this.lead.freshSession(m.session); } catch (e: any) { this.post({ type: "toast", text: String(e?.message ?? e) }); }
         break;
       case "openExternal":
         if (/^https?:\/\//.test(m.url)) void vscode.env.openExternal(vscode.Uri.parse(m.url));
         break;
+    }
+  }
+
+  private postConfig() {
+    this.post({ type: "config", model: this.lead.cfg.model, claudeModel: this.lead.cfg.claude.model, autoCompact: this.lead.cfg.claude.autoCompact !== false });
+  }
+
+  /** Compact a Claude session. Between tasks this occupies the panel like a short task (Stop works). */
+  private async compact(session: string, focus: string) {
+    const idle = !this.lead.busy;
+    try {
+      const running = this.lead.compact(session, focus); // busy is set synchronously when it starts now
+      if (idle) { BriefwisePanel.busyChanged.fire(true); this.postState(); }
+      await running;
+    } catch (e: any) {
+      this.post({ type: "toast", text: String(e?.message ?? e) });
+    } finally {
+      if (idle) { BriefwisePanel.busyChanged.fire(false); this.postState(); this.saveTranscript(); }
     }
   }
 

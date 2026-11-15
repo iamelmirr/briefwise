@@ -166,6 +166,28 @@ const events = () => posted.filter((m) => m.type === "event").map((m) => m.event
   assert.ok(log.some((l) => l.startsWith("terminal:") && l.includes("--resume")), "resume opens terminal with --resume");
   console.log("✓ notes, resume:", log.find((l) => l.startsWith("terminal:")));
 
+  // session control: context shown, compact between tasks (busy while it runs), fresh session, auto-compact toggle
+  const initSessions = posted.find((m) => m.type === "init").data.sessions;
+  const math = initSessions.find((s) => s.name === "math");
+  assert.ok(math && math.started && math.contextTokens > 0 && math.contextWindow === 200000, "init carries session context");
+  assert.equal(posted.find((m) => m.type === "init").data.autoCompact, true);
+  posted.length = 0;
+  await send({ type: "compact", session: "math", focus: "keep the zero check" });
+  const cs = events().find((e) => e.type === "claude-start" && e.mode === "compact");
+  assert.deepEqual([cs.by, cs.prompt], ["user", "/compact keep the zero check"]);
+  assert.ok(posted.some((m) => m.type === "state" && m.busy) && posted.filter((m) => m.type === "state").at(-1).busy === false, "busy while compacting, idle after");
+  assert.equal(posted.filter((m) => m.type === "sessions").at(-1).sessions.find((s) => s.name === "math").contextTokens, 1600);
+  assert.ok(!events().some((e) => e.type === "sessions"), "session state is posted live, not as transcript events");
+  await send({ type: "freshSession", session: "math" });
+  assert.equal(posted.filter((m) => m.type === "sessions").at(-1).sessions.find((s) => s.name === "math").started, false);
+  assert.ok(events().some((e) => e.type === "session-fresh" && e.session === "math"));
+  await send({ type: "compact", session: "math", focus: "" });
+  assert.match(posted.filter((m) => m.type === "toast").at(-1).text, /no Claude conversation/);
+  await send({ type: "setAutoCompact", on: false });
+  assert.equal(posted.filter((m) => m.type === "config").at(-1).autoCompact, false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(repo, ".briefwise", "config.json"), "utf8")).claude.autoCompact, false);
+  console.log("✓ sessions: context shown, compact (41k → 2k), fresh session, auto-compact off saved");
+
   await send({ type: "newConversation" });
   assert.ok(posted.some((m) => m.type === "reset"));
   assert.equal(JSON.parse(fs.readFileSync(tp, "utf8")).length, 0);

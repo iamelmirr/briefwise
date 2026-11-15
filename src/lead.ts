@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { clip, init, isDenied, readJson, readText, writeJson, type Config, type Paths } from "./config.ts";
 import { changesSince, dirtyFiles, git, guardIssues, snapshot } from "./git.ts";
-import { buildArgs, describeAllowed, resolveClaudeBin, startClaude, withMode, type ClaudeEvent, type ClaudeResult, type ClaudeRun, type Mode } from "./claude.ts";
+import { buildArgs, claudeEnv, describeAllowed, resolveClaudeBin, startClaude, withMode, type ClaudeEvent, type ClaudeResult, type ClaudeRun, type Mode } from "./claude.ts";
 import { leadCall, type Msg } from "./openrouter.ts";
 import { leadName } from "./names.ts";
 
@@ -15,13 +15,17 @@ export type LeadEvent =
   | { type: "lead-text"; delta: string }
   | { type: "lead-end"; promptTokens: number; cachedTokens: number }
   | { type: "lead-tool"; name: string; label: string }
-  | { type: "claude-start"; session: string; mode: Mode; prompt: string }
+  | { type: "claude-start"; session: string; mode: Mode | "compact"; prompt: string; by?: "user" | "lead" }
   | { type: "claude-event"; session: string; event: ClaudeEvent }
   | { type: "claude-end"; session: string; result: ClaudeResult }
   | { type: "claude-files"; session: string; files: { file: string; code: string }[] }
   | { type: "guard"; issues: string[] }
   | { type: "blocked"; reason: string }
   | { type: "notice"; text: string }
+  /** A Claude session was reset: its next run starts a new Claude conversation. */
+  | { type: "session-fresh"; session: string; by: "user" | "lead" }
+  /** Current state of all Claude sessions (context use, queued compaction). Not part of the transcript. */
+  | { type: "sessions"; sessions: SessionInfo[] }
   | { type: "task-end"; report: string; streamed: boolean; leadUsd: number; claudeUsd: number };
 
 export type LeadOptions = {
@@ -35,7 +39,16 @@ export type LeadHooks = {
   askUser(question: string): Promise<string | null>;
 };
 
-type Session = { id?: string; purpose: string; created: string };
+type Session = { id?: string; purpose: string; created: string; contextTokens?: number; contextWindow?: number; previousIds?: string[] };
+
+export type SessionInfo = {
+  name: string; purpose: string;
+  started: boolean;          // has a Claude conversation (false: the next run starts fresh)
+  contextTokens?: number;    // how full Claude's context was after the last run
+  contextWindow?: number;
+  live: boolean;             // Claude is running in it right now
+  compactQueued: boolean;    // a compaction waits for the current run to end
+};
 type Turn = { user: string; report: string; at: string };
 type Task = {
   goal: string;
@@ -61,7 +74,9 @@ const TOOLS = [
   tool("git", "Read-only git: status, diff, log, show, branch. Pass args as a list, e.g. [\"diff\", \"--stat\"].", { args: { type: "array", items: str } }, ["args"]),
   tool("update_notes", "Overwrite one of your notes files with full new content. PRIVATE is for things only you may know (never shared with Claude).", { file: { type: "string", enum: [...NOTE_FILES] }, content: str }, ["file", "content"]),
   tool("new_session", "Register a named Claude Code session for a workstream (e.g. 'auth', 'billing-api').", { name: str, purpose: str }, ["name", "purpose"]),
-  tool("list_sessions", "List Claude Code sessions."),
+  tool("list_sessions", "List Claude Code sessions with how full each one's context is."),
+  tool("compact_session", "Compact a Claude session's context: Claude replaces the conversation with a summary and keeps working in it. Only when the user asks (now, or as a standing instruction in their rules or notes).", { session: str, focus: { type: "string", description: "optional, in English: what the summary must keep" } }, ["session"]),
+  tool("fresh_session", "Start a fresh Claude conversation for a session name: Claude forgets everything earlier in it, so your next brief must be self-contained. Only when the user asks (now, or as a standing instruction in their rules or notes).", { session: str }, ["session"]),
   tool("ask_claude", "Consult Claude Code in a session, read-only (it investigates code, cannot change it). Counts toward the per-task consultation limit.", { session: str, prompt: str }, ["session", "prompt"]),
   tool("implement", "Have Claude Code implement changes in a session. It edits files and runs allowed checks.", { session: str, prompt: str }, ["session", "prompt"]),
   tool("escalate_to_user", "Stop and ask the user. Use for approvals (dependencies, schema, deletions, production) or real ambiguity about the goal.", { question: str }, ["question"]),
@@ -86,6 +101,10 @@ export class Lead {
   private opts: LeadOptions;
   private abort?: AbortController;
   private active?: ClaudeRun;
+  private activeSession?: string;
+  private compacting: Promise<ClaudeResult> | null = null;
+  private pendingCompact = new Map<string, string>(); // session → focus, run when the current Claude run ends
+  private userActions: string[] = []; // session changes the user made mid-task; told to the lead at its next step
   private userNotes: string[] = []; // what the user told Claude directly during the current run
   private running = false;
   private stopped = false;
@@ -102,7 +121,7 @@ export class Lead {
     this.sessions = readJson(P.sessions, {});
   }
 
-  get busy(): boolean { return this.running; }
+  get busy(): boolean { return this.running || !!this.compacting; }
   get claudeActive(): boolean { return !!this.active; }
 
   /** Stop the current task: aborts the lead's request and kills the running Claude process. */
@@ -152,8 +171,54 @@ export class Lead {
   sessionId(name: string): string | undefined { return this.sessions[name]?.id; }
 
   listSessions(): string {
-    const rows = Object.entries(this.sessions).map(([k, v]) => [k, { purpose: v.purpose, started: !!v.id, id: v.id }]);
+    const rows = Object.entries(this.sessions).map(([k, v]) => [k, { purpose: v.purpose, started: !!v.id, context: ctxLabel(v) }]);
     return rows.length ? JSON.stringify(Object.fromEntries(rows), null, 2) : "(no sessions)";
+  }
+
+  sessionInfo(): SessionInfo[] {
+    return Object.entries(this.sessions).map(([name, s]) => ({
+      name, purpose: s.purpose, started: !!s.id, contextTokens: s.id ? s.contextTokens : undefined, contextWindow: s.contextWindow,
+      live: this.activeSession === name, compactQueued: this.pendingCompact.has(name),
+    }));
+  }
+
+  /** false: Claude never compacts by itself (DISABLE_AUTO_COMPACT); compaction only happens when asked. Saved in config. */
+  setAutoCompact(on: boolean): void {
+    this.cfg.claude.autoCompact = on;
+    this.saveConfig((c) => { c.claude = { ...(c.claude ?? {}), autoCompact: on }; });
+  }
+
+  /**
+   * Compact a Claude session (Claude's own /compact, optionally with what to keep).
+   * If Claude is running right now, the compaction is queued and runs as soon as that run ends.
+   */
+  async compact(name: string, focus = "", by: "user" | "lead" = "user"): Promise<"done" | "queued"> {
+    const s = this.sessions[name];
+    if (!s?.id) throw new Error(`Session "${name}" has no Claude conversation to compact yet.`);
+    if (this.active || this.compacting) {
+      this.pendingCompact.set(name, focus.trim());
+      this.emit({ type: "notice", text: `Compaction of session ${name} is queued: it runs as soon as Claude finishes the current step.` });
+      this.emitSessions();
+      return "queued";
+    }
+    await this.runCompact(name, focus.trim(), by);
+    return "done";
+  }
+
+  /** Forget a session's Claude conversation: its next run starts a fresh one. The old conversation can still be resumed by hand. */
+  freshSession(name: string, by: "user" | "lead" = "user"): void {
+    const s = this.sessions[name];
+    if (!s) throw new Error(`There is no session "${name}".`);
+    if (this.activeSession === name) throw new Error(`Claude is working in session ${name} right now. Wait for it to finish or stop it first.`);
+    this.pendingCompact.delete(name);
+    if (s.id) s.previousIds = [...(s.previousIds ?? []), s.id].slice(-10);
+    delete s.id;
+    delete s.contextTokens;
+    writeJson(this.P.sessions, this.sessions);
+    this.log(`Fresh Claude session (${by})`, name);
+    this.emit({ type: "session-fresh", session: name, by });
+    if (by === "user" && this.running) this.userActions.push(`The user started a fresh Claude conversation for session "${name}": Claude no longer remembers earlier work there, so make your next brief for it self-contained.`);
+    this.emitSessions();
   }
 
   async run(userMsg: string): Promise<string> {
@@ -195,7 +260,7 @@ export class Lead {
   }
 
   private systemPrompt(): string {
-    const sess = Object.entries(this.sessions).map(([k, v]) => `- ${k}: ${v.purpose}`).join("\n") || "(none yet)";
+    const sess = Object.entries(this.sessions).map(([k, v]) => `- ${k}: ${v.purpose} (${ctxLabel(v)})`).join("\n") || "(none yet)";
     return `You are the technical lead of the repository at ${this.repo}. The user is your boss. Claude Code is your engineer.
 
 Your main job: turn what the user says (often casual, in their own language) into precise technical tasks that Claude Code understands and implements well, and keep to yourself what Claude does not need to know.
@@ -210,6 +275,7 @@ How you work:
 - When implementing, Claude may run only these commands: ${this.allowedForPrompt()}. Name the right one for checks in your prompt. If Claude reports that a check could not run, have it use an allowed command; if none fits, tell the user which command to add to claude.implementAllow in .briefwise/config.json.
 - Work autonomously until done. escalate_to_user only for: new/changed dependencies, database schema, deleting files, production/deployment, or a genuinely ambiguous goal. A GUARD warning means you must escalate or have Claude revert.
 - One Claude session per workstream (new_session); reuse a session to continue the same work, it remembers.
+- The user decides when a Claude session is compacted or started fresh. Call compact_session or fresh_session only when the user asks, now or as a standing instruction (e.g. "fresh session after each feature"). If a session you use is over 60% full, say so in your report so the user can decide. After a fresh session, brief Claude as if it knows nothing.
 - The raw conversation is not kept between tasks; your notes are your long-term memory. Before finishing, update TASKS/DECISIONS briefly if something changed, and PROJECT when you learn lasting facts. Keep notes compact.
 - When the user tells you something private (clients, business context, people, money), save it in PRIVATE. Only you see PRIVATE.
 - If the user only asks a question or chats, answer directly, no tools needed.
@@ -320,6 +386,10 @@ ${sess}`;
           try { out = await this.callTool(t, name, args); } catch (e: any) { out = `ERROR: ${e.message}`; }
           if (READ_TOOLS.has(name)) t.readLabels.set(tc.id, this.toolLabel(name, args));
           if (name === "ask_claude") afterAsk = true;
+          if (this.userActions.length) {
+            out += `\n\nUSER ACTIONS (the user did this themselves; take it into account):\n${this.userActions.map((a) => `- ${a}`).join("\n")}`;
+            this.userActions = [];
+          }
           t.msgs.push({ role: "tool", tool_call_id: tc.id, content: out });
         }
       }
@@ -423,6 +493,19 @@ ${sess}`;
       }
       case "list_sessions":
         return this.listSessions();
+      case "compact_session": {
+        const name = String(a.session ?? "");
+        if (!this.sessions[name]?.id) return `ERROR: session "${name}" has no Claude conversation to compact.`;
+        await this.compact(name, String(a.focus ?? ""), "lead");
+        const s = this.sessions[name];
+        return `Compacted. Session ${name} context is now ${ctxLabel(s)}.`;
+      }
+      case "fresh_session": {
+        const name = String(a.session ?? "");
+        if (!this.sessions[name]) return `ERROR: there is no session "${name}".`;
+        this.freshSession(name, "lead");
+        return `Session ${name} will start a fresh Claude conversation on its next run. Claude remembers nothing from before.`;
+      }
       case "ask_claude":
       case "implement": {
         const prompt = String(a.prompt ?? "");
@@ -465,6 +548,8 @@ ${sess}`;
             out += warn;
           }
         }
+        // compactions the user asked for during this run: only now, after the run's own events, so UIs stay in order
+        await this.flushPendingCompact();
         return out;
       }
       case "escalate_to_user": {
@@ -481,27 +566,116 @@ ${sess}`;
     return `ERROR: unknown tool ${name}`;
   }
 
-  private async runClaude(session: string, prompt: string, mode: Mode): Promise<ClaudeResult> {
-    const s = (this.sessions[session] ??= { purpose: "(auto-created)", created: new Date().toISOString() });
+  private emitSessions() { this.emit({ type: "sessions", sessions: this.sessionInfo() }); }
+
+  /** Forward a Claude event, keeping the session's context size current. */
+  private onClaudeEvent(session: string, event: ClaudeEvent) {
+    const s = this.sessions[session];
+    if (s && event.kind === "init" && event.sessionId && s.id !== event.sessionId) {
+      s.id = event.sessionId; // known from the start, so a compaction can be queued for a brand-new session
+      writeJson(this.P.sessions, this.sessions);
+    } else if (s && event.kind === "context") {
+      s.contextTokens = event.tokens;
+      if (event.window) s.contextWindow = event.window;
+    } else if (s && event.kind === "compacted" && event.post) {
+      s.contextTokens = event.post;
+    }
+    this.emit({ type: "claude-event", session, event });
+    if (event.kind === "context" || event.kind === "compacted") this.emitSessions();
+  }
+
+  /** One Claude process at a time: start it, track it as active, record context use when it ends. */
+  private async spawnClaude(session: string, mode: Mode, sessionId: string | undefined, prompt: string): Promise<ClaudeResult> {
+    while (this.compacting) await this.compacting;
     const run = startClaude({
       bin: this.claudeBin,
       repo: this.repo,
-      args: buildArgs(this.cfg, mode, s.id),
-      prompt: withMode(mode, prompt, this.cfg.claude.implementAllow),
-      onEvent: (event) => this.emit({ type: "claude-event", session, event }),
+      args: buildArgs(this.cfg, mode, sessionId),
+      prompt,
+      env: claudeEnv(this.cfg),
+      onEvent: (event) => this.onClaudeEvent(session, event),
     });
     this.active = run;
-    const res = await run.done;
-    this.active = undefined;
+    this.activeSession = session;
+    this.emitSessions();
+    try {
+      return await run.done;
+    } finally {
+      this.active = undefined;
+      this.activeSession = undefined;
+    }
+  }
+
+  private async runCompact(name: string, focus: string, by: "user" | "lead"): Promise<ClaudeResult> {
+    const s = this.sessions[name];
+    const prompt = focus ? `/compact ${focus}` : "/compact";
+    if (!this.running) this.stopped = false; // a stop from an earlier task must not cancel this one
+    const work = (async () => {
+      this.emit({ type: "claude-start", session: name, mode: "compact", prompt, by });
+      this.log(`Compact Claude session ${name} (${by})`, prompt);
+      const startedTask = this.running;
+      const res = await this.spawnClaude(name, "ask", s.id, prompt);
+      if (startedTask) this.claudeUsd += res.costUsd;
+      if (res.sessionId) s.id = res.sessionId;
+      if (res.compacted?.post) s.contextTokens = res.compacted.post;
+      if (res.contextWindow) s.contextWindow = res.contextWindow;
+      writeJson(this.P.sessions, this.sessions);
+      this.emit({ type: "claude-end", session: name, result: res });
+      if (by === "user" && this.running) {
+        this.userActions.push(res.compacted
+          ? `The user compacted Claude session "${name}" (${ktok(res.compacted.pre)} → ${ktok(res.compacted.post)} tokens). Claude keeps a summary of the earlier work there.`
+          : `The user tried to compact Claude session "${name}", but it did not complete.`);
+      }
+      return res;
+    })();
+    this.compacting = work;
+    let res: ClaudeResult;
+    try {
+      res = await work;
+    } finally {
+      this.compacting = null;
+      this.emitSessions();
+    }
+    await this.flushPendingCompact(); // another compaction may have been queued meanwhile
+    return res;
+  }
+
+  /** Compactions the user asked for while Claude was running. */
+  private async flushPendingCompact() {
+    if (this.stopped) {
+      if (this.pendingCompact.size) this.emit({ type: "notice", text: "The task was stopped, so the queued compaction did not run. Compact again when you're ready." });
+      this.pendingCompact.clear();
+      return;
+    }
+    for (const [name, focus] of [...this.pendingCompact]) {
+      this.pendingCompact.delete(name);
+      if (this.sessions[name]?.id) await this.runCompact(name, focus, "user");
+    }
+  }
+
+  private async runClaude(session: string, prompt: string, mode: Mode): Promise<ClaudeResult> {
+    const s = (this.sessions[session] ??= { purpose: "(auto-created)", created: new Date().toISOString() });
+    const res = await this.spawnClaude(session, mode, s.id, withMode(mode, prompt, this.cfg.claude.implementAllow));
+    if (res.contextTokens) s.contextTokens = res.contextTokens;
+    if (res.contextWindow) s.contextWindow = res.contextWindow;
     if (res.isError && s.id && /No conversation found/i.test(res.text)) {
       delete s.id; // session vanished → start fresh
       writeJson(this.P.sessions, this.sessions);
       return this.runClaude(session, `(Previous session context was lost; start fresh.)\n\n${prompt}`, mode);
     }
-    if (res.sessionId) {
-      s.id = res.sessionId;
-      writeJson(this.P.sessions, this.sessions);
-    }
+    if (res.sessionId) s.id = res.sessionId;
+    writeJson(this.P.sessions, this.sessions);
     return res;
   }
+}
+
+const ktok = (n: number) => (n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+
+/** "48k of 200k tokens (24%)", or why there is no number. */
+function ctxLabel(s: Session): string {
+  if (!s.id) return "fresh: no Claude conversation yet";
+  if (!s.contextTokens) return "context size unknown";
+  return s.contextWindow
+    ? `context ${ktok(s.contextTokens)} of ${ktok(s.contextWindow)} tokens, ${Math.round((s.contextTokens / s.contextWindow) * 100)}%`
+    : `context ${ktok(s.contextTokens)} tokens`;
 }

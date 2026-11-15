@@ -573,3 +573,33 @@ body.vscode-light .send { color: #fff; }
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
   .thinking-label { color: var(--muted); background: none; }
 }
+
+/* ───────────── session control ───────────── */
+.sess-ctl { display: flex; align-items: center; gap: 2px; }
+.sess-ctl[hidden] { display: none; }
+.sess-meter { height: 24px; padding: 0 6px; border-radius: 6px; font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.sess-meter:hover { background: var(--raise-2); color: var(--fg); }
+.sess-meter .meter-fill { background: var(--claude); }
+.sess-meter[data-level="mid"] .meter-fill { background: var(--warn); }
+.sess-meter[data-level="high"] .meter-fill { background: var(--danger); }
+.sess-queued { color: var(--warn); }
+.menu-session { width: 290px; padding: 10px; display: flex; flex-direction: column; gap: 12px; }
+.sm-head { display: flex; flex-direction: column; gap: 2px; }
+.sm-title { font-weight: 600; font-size: var(--fs-sm); }
+.sm-ctx { font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.sm-section { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.sm-label { font-size: var(--fs-sm); font-weight: 600; }
+.sm-hint { font-size: var(--fs-xs); color: var(--muted); line-height: 1.45; }
+.sess-focus { width: 100%; min-height: 44px; resize: vertical; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--vscode-input-background, var(--raise-1)); font-size: var(--fs-sm); }
+.sess-focus:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.sm-fresh .icon { width: 13px; height: 13px; }
+.sm-toggle { display: flex; gap: 8px; align-items: flex-start; padding-top: 10px; border-top: 1px solid var(--line-soft); font-size: var(--fs-xs); color: var(--fg); cursor: pointer; line-height: 1.45; }
+.sm-toggle input { margin: 1px 0 0; accent-color: var(--claude); }
+.mode-compact { color: var(--muted); background: var(--raise-3); }
+.run-compact .brief-text { font-family: var(--mono); }
+.feed-intro { padding: 14px 4px; font-size: var(--fs-sm); color: var(--muted); }
+.sess-mark { display: flex; align-items: center; gap: 10px; margin: 14px 0; font-size: var(--fs-xs); color: var(--muted); }
+.sess-mark-line { flex: 1; height: 1px; background: var(--line-soft); }
+.sess-mark-text { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 6px; max-width: 80%; text-align: center; font-weight: 600; color: var(--fg); }
+.sess-mark-text .icon { width: 13px; height: 13px; color: var(--claude); }
+.sess-mark-sub { flex-basis: 100%; font-weight: 400; color: var(--muted); }
