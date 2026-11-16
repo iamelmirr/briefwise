@@ -214,7 +214,7 @@ Some things are not configurable, on purpose:
 
 | Variable | Used by | Effect |
 |---|---|---|
-| `OPENROUTER_API_KEY` | CLI | The OpenRouter key. The VS Code extension uses the key saved in secret storage instead. |
+| `OPENROUTER_API_KEY` | CLI, VS Code | The OpenRouter key. The VS Code extension prefers a key saved in secret storage and uses this one when none is saved. |
 | `CLAUDE_BIN` | both | Path to `claude`, used when `claude.path` is `null`. |
 | `OPENROUTER_BASE_URL` | both | Override the OpenRouter API base URL (default `https://openrouter.ai/api/v1`). Used by the tests to point at a mock server. |
 | `NO_COLOR` | CLI | Disable colored output. |

@@ -12,6 +12,11 @@ All notable changes to this project are documented here. The format is based on 
 ### Changed
 
 - Messages you send straight to Claude while it works now reach the lead together with Claude's report, marked as your decisions, so the lead's review doesn't undo them.
+- The VS Code extension uses `OPENROUTER_API_KEY` when no key is saved in the panel, like the CLI.
+
+### Fixed
+
+- The **Briefwise** status bar item now appears when VS Code starts. Before, it showed only after the first Briefwise command. There is also a Briefwise button in the editor title bar.
 
 ## 0.4.0 - 2026-11-15
 

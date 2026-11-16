@@ -21,7 +21,9 @@
     "ai"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "commands": [
       {
@@ -51,6 +53,14 @@
         "category": "Briefwise"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "briefwise.open",
+          "group": "navigation@100"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "briefwise.open",

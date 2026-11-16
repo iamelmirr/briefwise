@@ -31,9 +31,9 @@ Briefwise warns you once per session when the tree has uncommitted files, becaus
 
 2. Open your project folder (**File > Open Folder**). In a multi-root workspace, Briefwise asks which folder to use.
 
-3. Press `Ctrl+Alt+K` (`Cmd+Alt+K` on macOS), run **Briefwise: Open** from the command palette, or click **Briefwise** in the status bar.
+3. Press `Ctrl+Alt+K` (`Cmd+Alt+K` on macOS), run **Briefwise: Open** from the command palette, click **Briefwise** in the status bar, or click the Briefwise button in an editor's title bar.
 
-4. The left pane asks you to connect OpenRouter. Paste your key and click **Save key**. The key goes into VS Code's secret storage, not into the project. You can change it later with **Briefwise: Set OpenRouter key** or remove it with **Briefwise: Clear OpenRouter key**.
+4. The left pane asks you to connect OpenRouter. Paste your key and click **Save key**. The key goes into VS Code's secret storage, not into the project. You can change it later with **Briefwise: Set OpenRouter key** or remove it with **Briefwise: Clear OpenRouter key**. If `OPENROUTER_API_KEY` is set in the environment VS Code started with, the panel uses it when no key is saved, and skips this step.
 
 5. If the panel shows "Claude Code not found", see [Claude Code not found](troubleshooting.md#claude-code-not-found).
 

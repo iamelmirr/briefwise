@@ -11,6 +11,8 @@ import { baseUri } from "./base-content.ts";
 export const KEY_SECRET = "briefwise.openrouterKey";
 /** Where releases before the Briefwise rename kept the key; moved to KEY_SECRET once on activation. */
 export const LEGACY_KEY_SECRET = "kimiLead.openrouterKey";
+/** Without a saved key, the extension uses OPENROUTER_API_KEY, like the CLI. */
+const envKey = (): string | undefined => process.env.OPENROUTER_API_KEY?.trim() || undefined;
 const MAX_TRANSCRIPT = 4000;
 const MODELS_TTL = 10 * 60_000;
 let modelsCache: { at: number; models: ModelInfo[] } | undefined;
@@ -58,7 +60,7 @@ export class BriefwisePanel {
       return BriefwisePanel.current;
     }
     BriefwisePanel.current?.panel.dispose();
-    const key = await ctx.secrets.get(KEY_SECRET);
+    const key = (await ctx.secrets.get(KEY_SECRET)) ?? envKey();
     BriefwisePanel.current = new BriefwisePanel(ctx, repo, key);
     return BriefwisePanel.current;
   }
@@ -85,7 +87,7 @@ export class BriefwisePanel {
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     ctx.secrets.onDidChange(async (e) => {
       if (e.key !== KEY_SECRET) return;
-      this.apiKey = await ctx.secrets.get(KEY_SECRET);
+      this.apiKey = (await ctx.secrets.get(KEY_SECRET)) ?? envKey();
       this.postState();
     }, null, this.disposables);
   }

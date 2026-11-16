@@ -35,7 +35,7 @@ These appear as an error card in the panel or an `Error:` line in the CLI.
 | Message | Cause and fix |
 |---|---|
 | `No OpenRouter API key (OPENROUTER_API_KEY)` | CLI: set the environment variable. On Windows after `setx`, open a new terminal. |
-| "Save your OpenRouter key first" | VS Code: paste the key in the panel, or run **Briefwise: Set OpenRouter key**. The extension does not read `OPENROUTER_API_KEY`. |
+| "Save your OpenRouter key first" | VS Code: paste the key in the panel, or run **Briefwise: Set OpenRouter key**. Or set `OPENROUTER_API_KEY` and restart VS Code completely (close every window), because VS Code reads its environment only at start. |
 | `The OpenRouter key is invalid or revoked (401)` | Create a new key at [openrouter.ai/keys](https://openrouter.ai/keys) and save it again. |
 | `does not have enough credits (402)` | Top up at [openrouter.ai/credits](https://openrouter.ai/credits). |
 | `Model ... is unavailable or does not support tools (404)` | The model id is wrong, was removed, or has no tool-capable provider. Pick another model in the picker or with `/model`. |
